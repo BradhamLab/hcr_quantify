@@ -318,8 +318,9 @@ def find_pmcs(
 
     Returns
     -------
-    [type]
-        [description]
+    np.ndarray
+        Integer array with the same size of `stain` and `pmc_probs` where each
+        numbered region represents a unique PMC.
     """
 
     labels1 = generate_labels(
@@ -341,7 +342,22 @@ def find_pmcs(
     return combine_segmentations(labels1, labels2)
 
 
-if __name__ == "__main__":
+def labels_to_hdf5(image, filename):
+    f = h5py.File(filename, "w")
+    dataset = f.create_dataset("image", image.shape, h5py.h5t.NATIVE_INT16, data=image)
+    f.close()
 
-    pmc_probs = np.array(h5py.File(probs, "r")["exported_data"])[:, :, :, 1]
-    pmc_stain = np.array(h5py.File(embryo, "r")["image"])
+
+if __name__ == "__main__":
+    try:
+        snakemake
+    except NameError:
+        snakemake = None
+    if snakemake is not None:
+
+        pmc_probs = np.array(h5py.File(snakemake.input["probs"], "r")["exported_data"])[
+            :, :, :, 1
+        ]
+        pmc_stain = np.array(h5py.File(snakemake.input["norm_stain"], "r")["image"])
+        pmc_segmentation = find_pmcs(pmc_stain, pmc_probs)
+        labels_to_hdf5(pmc_segmentation, snakemake.output)

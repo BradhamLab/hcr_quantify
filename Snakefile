@@ -1,8 +1,9 @@
 import os
 
+
 outdir = 'data'
 
-checkpoint move_files:
+rule move_files:
     input:
         ['a.nd2', 'b.nd2']
     output:
@@ -20,13 +21,23 @@ rule normalize_pmc_stains:
 
 rule predict_pmcs:
     input:
-        os.path.join(outdir, "pmc_norm", "{embryo}.h5")
+        image=os.path.join(outdir, "pmc_norm", "{embryo}.h5"),
+        model=config['ilastik']['model']
+    params:
+        ilastik_loc = '/home/dakota/Downloads/ilastik-1.3.3post3-Linux/run_ilastik.sh'
+        ilastik_loc = config['ilastik']['loc']
     output:
         os.path.join(outdir, "pmc_probs", "{embryo}.h5")
+    shell:
+        "{params.ilastik_loc} --headless "
+        "project=MyProject.ilp "
+        "output_format=hdf5 "
+        "output_filename_format={snakemake.output} "
+        "{input.image}"
 
 rule label_pmcs:
     input:
-        stain=os.path.join(outdir, "pmc_norm", "{embryo}.h5")
+        stain=os.path.join(outdir, "pmc_norm", "{embryo}.h5"),
         probs=os.path.join(outdir, "pmc_probs", "{embryo}-image_Probabilities.h5")
     output:
         os.path.join(outdir, "labels", "{embryo}_pmc_labels.h5")
@@ -35,7 +46,7 @@ rule label_pmcs:
 
 rule count_spots:
     input:
-        image=os.path.join(outdir, 'raw', '{embryo}.nd2')
+        image=os.path.join(outdir, 'raw', '{embryo}.nd2'),
         labels=os.path.join(outdir, 'labels', '{embryo}_pmc_labels.h5')
     output:
         os.path.join(outdir, 'counts', '{embryo}.csv')

@@ -12,6 +12,32 @@ from skimage.filters import threshold_otsu
 BoundingBox = namedtuple("BoundingBox", ["ymin", "ymax", "xmin", "xmax"])
 
 
+def normalize_zstack(z_stack, bits):
+    """Normalize z-slices in a 3D image using contrast stretching
+
+    Parameters
+    ----------
+    z_stack : numpy.ndarray
+        3 dimensional confocal FISH image.
+    bits : int
+        Bit depth of image.
+
+    Returns
+    -------
+    numpy.ndarray
+        Z-corrected image with each slice minimum and maximum matched
+    """
+    out = np.array(
+        [
+            exposure.rescale_intensity(
+                x, in_range=(0, 2 ** bits - 1), out_range=(z_stack.min(), z_stack.max())
+            )
+            for x in z_stack
+        ]
+    )
+    return skimage.img_as_uint(exposure.rescale_intensity(out))
+
+
 def read_bit_img(img_file, bits=12):
     """Read an image and return as a 16-bit image."""
     img = exposure.rescale_intensity(
@@ -106,11 +132,13 @@ def count_spots_in_labels(spots, labels):
 
 def count_spots(
     img,
-    scale=True,
-    scale_percentile=99.9,
+    labels,
     voxel_size_z=None,
     voxel_size_yx=0.67,
+    z_norm=True,
+    bits=12,
     psf_yx=1,
+    psf_z=1,
     whitehat=True,
     whitehat_selem=None,
     smooth_method="log",
@@ -127,19 +155,23 @@ def count_spots(
     ----------
     img : np.ndarray
         Image in which to perform molecule counting
-    scale : boolean, optional
-        Whether to scale image using contrast stretching, but default True.
-    scale_percentile : float, optional
-        Percentile to scale to using contrast stretching. Values should fall between 0
-        and 100. Default is 99.9.
+    labels : np.ndarray
+        Integer array of same shape as `img` denoting regions to interest to quantify.
+        Each separate region should be uniquely labeled.
     voxel_size_z : float, optional
-        The number of nanometers between each z-slice, by default None and two-dimensional
+        The number of microns between each z-slice, by default None and two-dimensional
         quantification is assumed.
     voxel_size_yx : float, optional
-        The space occupied by each pixel in nanometers, by default 0.67.
-    psf_yx : int, optional
+        The space occupied by each pixel in microns, by default 0.67.
+    psf_yx, psf_z : int, optional
         Theoretical size of the gaussian point-spread function emitted by a spot in the xy plane.
         By default 1.
+    z_norm : boolean, optional
+        Whether to normalize intensity values along the Z-dimension. Default is
+        True, and all slices will be stretched to the same minimum and maximum
+        intensity values.
+    bits : int, optional
+        Bit depth of `img`. Used if `z_norm==True`. Default is 12.
     whitehat : bool, optional
         Whether to perform white tophat filtering prior to image de-noising, by default True
     whitehat_selem : [int, np.ndarray], optional
@@ -166,18 +198,26 @@ def count_spots(
 
     Returns
     -------
-    (np.ndarray)
+    (np.ndarray, dict)
         np.ndarray: positions of all identified mRNA molecules.
-
+        dict: dictionary containing the number of molecules contained in each labeled region.
     """
+    if z_norm:
+        if verbose:
+            print("Normalizing intensities across Z slices...")
+            img = normalize_zstack(img, bits)
     if verbose:
         print("Cropping image to only include areas with signal...")
-    limits = select_signal(img)
-    cropped_img = crop_to_selection(img, limits)
-    if scale:
-        cropped_img = bf_stack.rescale(
-            cropped_img, stretching_percentile=scale_percentile
+    if img.shape != labels.shape:
+        raise ValueError(
+            "Expected FISH and label images to have the same shape. "
+            f"Received {img.shape} and {labels.shape}"
         )
+    limits, __ = select_signal(img)
+    # normalize cropped image
+    cropped_img = bf_stack.rescale(crop_to_selection(img, limits))
+    cropped_labels = crop_to_selection(labels, limits)
+    n_labels = len(np.unique(labels)) - 1  # subtract one for background
     if whitehat:
         cropped_img = morphology.white_tophat(cropped_img, whitehat_selem)
     if smooth_method == "log":
@@ -186,9 +226,9 @@ def count_spots(
         smoothed = bf_stack.remove_background_gaussian(cropped_img, sigma=smooth_sigma)
     else:
         raise ValueError(f"Unsupported background filter: {smooth_method}")
-    psf_z = None
     if voxel_size_z is not None:
-        psf_z = psf_yx * voxel_size_z / voxel_size_yx
+        if psf_z is None:
+            psf_z = psf_yx * voxel_size_z / voxel_size_yx
         sigma_z, sigma_yx, sigma_yx = bf_stack.get_sigma(
             voxel_size_z, voxel_size_yx, psf_z, psf_yx
         )
@@ -213,6 +253,15 @@ def count_spots(
         psf_z=psf_z,
         psf_yx=psf_yx,
     )
+    if verbose:
+        print("plotting threshold optimization for spot detection...")
+        bf_plot.plot_elbow(
+            smoothed,
+            voxel_size_z=voxel_size_z,
+            voxel_size_yx=voxel_size_yx,
+            psf_z=psf_z,
+            psf_yx=psf_yx,
+        )
     try:
         (
             spots_post_decomposition,
@@ -237,9 +286,59 @@ def count_spots(
         print(
             f"detected spots after decomposition: {spots_post_decomposition.shape[0]}"
         )
+        print(f"shape of reference spot for decomposition: {reference_spot.shape}")
         bf_plot.plot_reference_spot(reference_spot, rescale=True)
+    each = spots[0]
+    counts = {i: 0 for i in range(1, n_labels + 1)}
+    for each in spots_post_decomposition:
+        if len(each) == 3:
+            cell_label = cropped_labels[each[0], each[1], each[2]]
+        else:
+            cell_label = cropped_labels[each[0], each[1]]
+        if cell_label != 0:
+            counts[cell_label] += 1
     # spots are in cropped coordinates, shift back to original
     spots_post_decomposition[:, 1] += limits.ymin
     spots_post_decomposition[:, 2] += limits.xmin
+    return spots_post_decomposition, counts
 
-    return spots_post_decomposition
+
+if __name__ == "__main__":
+    import h5py
+    import pandas as pd
+    from aicsimageio import AICSImage
+
+    try:
+        snakemake
+    except NameError:
+        snakemake = None
+    if snakemake is not None:
+        img = AICSImage(snakemake.input["image"])
+        labels = np.array(h5py.File(snakemake.input["labels"], "r")["image"])
+        start = snakemake.params["z_start"]
+        stop = snakemake.params["z_stop"]
+        genes = snakemake.params["genes"]
+        channels = snakemake.params["channels"]
+        fish_counts = {}
+        embryo = snakemake.wildcards["embryo"]
+        for (gene, fish_cannel) in zip(genes, channels):
+            fish_data = img.get_image_dask_data("ZYX", C=fish_channel)[start:stop, :, :]
+            spots, counts = count_spots(
+                fish_data,
+                labels,
+                voxel_size_z=img.physical_pixel_sizes.Z * 1000,
+                voxel_size_yx=img.physical_pixel_sizes.X * 1000,
+                psf_z=img.physical_pixel_sizes.X
+                / img.physical_pixel_sizes.Z
+                * 1000
+                * 5,
+                psf_yx=img.physical_pixel_sizes.X * 1000 * 1.25,  # * 1.3,
+                whitehat=True,
+                smooth_method="log",
+                smooth_sigma=1,
+                verbose=True,
+            )
+            fish_counts[gene] = counts
+        exprs_df = pd.DataFrame.from_dict(fish_counts)
+        exprs_df["embryo"] = embryo
+        exprs_df.to_csv(snakemake.output["csv"])

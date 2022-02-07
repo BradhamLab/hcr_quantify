@@ -321,7 +321,7 @@ if __name__ == "__main__":
         channels = snakemake.params["channels"]
         fish_counts = {}
         embryo = snakemake.wildcards["embryo"]
-        for (gene, fish_cannel) in zip(genes, channels):
+        for (gene, fish_channel) in zip(genes, channels):
             fish_data = img.get_image_dask_data("ZYX", C=fish_channel)[start:stop, :, :]
             spots, counts = count_spots(
                 fish_data,

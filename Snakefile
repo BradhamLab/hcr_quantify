@@ -24,13 +24,12 @@ rule predict_pmcs:
         image=os.path.join(outdir, "pmc_norm", "{embryo}.h5"),
         model=config['ilastik']['model']
     params:
-        ilastik_loc = '/home/dakota/Downloads/ilastik-1.3.3post3-Linux/run_ilastik.sh'
         ilastik_loc = config['ilastik']['loc']
     output:
         os.path.join(outdir, "pmc_probs", "{embryo}.h5")
     shell:
         "{params.ilastik_loc} --headless "
-        "project=MyProject.ilp "
+        "project={input.model} "
         "output_format=hdf5 "
         "output_filename_format={snakemake.output} "
         "{input.image}"

@@ -3,8 +3,6 @@
 # Takes as input any microscopy image file, outputs an .h5 file
 # to be used as input for ilastik PMC segmentation
 
-import os
-import shutil
 
 import h5py
 import numpy as np
@@ -49,44 +47,21 @@ def clean_pmc_stain(img, size=25):
     return np.array(out)
 
 
-# z_scale = img.physical_pixel_sizes.Z / img.physical_pixel_sizes.Y
-
-
-# is bad
 if __name__ == "__main__":
     try:
         snakemake
     except NameError:
         snakemake = None
-    if snakemake is not None:
-        logfile = pd.read_csv(snakemake.input["log"], index_col=0)
-        datadir = snakemake.params["datadir"]
-    else:
-        logfile = pd.read_csv(
-            "/home/dakota/Data/icat_embryos/Nahomie/Nahomie_icat_embryo_log.csv"
+        img = AICSImage(snakemake.input["image"])
+        channel = snakemake.input["pmc_channel"]
+        z_start = snakemake.params["z_start"]
+        z_stop = snakemake.params["z_end"]
+        pmc = img.get_image_data("ZYX", C=channel)[z_start:z_stop]
+        pmc = np.array(
+            [
+                exposure.rescale_intensity(x, out_range=(pmc.min(), pmc.max()))
+                for x in pmc
+            ]
         )
-        datadir = "/home/dakota/Data/icat_embryos/Nahomie/"
-    for idx in logfile.index:
-        input_file = os.path.join(datadir, logfile.loc[idx, "file"])
-        outfile = os.path.splitext(input_file)[0] + ".h5"
-        FORCE = False
-        if not os.path.exists(outfile) or FORCE:
-            if os.path.exists(outfile) and FORCE:
-                shutil.move(outfile, outfile.replace(".h5", "_copy.h5"))
-            start, stop = logfile.loc[idx, ["z-start", "z-end"]]
-            pmc_channel = [
-                i
-                for i, x in enumerate(logfile.loc[idx, "channel_order"].split(";"))
-                if x.lower() == "pmc"
-            ][0]
-            img = AICSImage(input_file)
-            pmc = img.get_image_data("ZYX", C=pmc_channel)[start:stop]
-            pmc = np.array(
-                [
-                    exposure.rescale_intensity(x, out_range=(pmc.min(), pmc.max()))
-                    for x in pmc
-                ]
-            )
-            pmc = exposure.rescale_intensity(pmc, out_range=(0, 1))
-            # pmc = clean_pmc_stain(pmc, size=50)
-            to_hdf5(pmc, outfile)
+        pmc = exposure.rescale_intensity(pmc, out_range=(0, 1))
+        to_hdf5(pmc, snakemake.output["out"])

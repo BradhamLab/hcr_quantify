@@ -342,7 +342,7 @@ if __name__ == "__main__":
                 / img.physical_pixel_sizes.Z
                 * 1000
                 * 5,
-                psf_yx=img.physical_pixel_sizes.X * 1000 * 1.25,  # * 1.3,
+                psf_yx=img.physical_pixel_sizes.X * 1000 * 2,
                 whitehat=True,
                 smooth_method="log",
                 smooth_sigma=1,

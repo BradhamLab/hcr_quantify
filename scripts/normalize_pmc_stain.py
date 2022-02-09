@@ -12,6 +12,13 @@ from scipy import ndimage as ndi
 from skimage import exposure, filters, morphology, transform
 
 
+def get_channel_index(channels, channel):
+    channel_index = [
+        i for i, x in enumerate(channels.split(";")) if x.lower() == channel.lower()
+    ][0]
+    return channel_index
+
+
 def to_hdf5(image, filename):
     f = h5py.File(filename, "w")
     dataset = f.create_dataset("image", image.shape, h5py.h5t.NATIVE_DOUBLE, data=image)
@@ -52,8 +59,12 @@ if __name__ == "__main__":
         snakemake
     except NameError:
         snakemake = None
+    if snakemake is not None:
+        print(snakemake.params)
         img = AICSImage(snakemake.input["image"])
-        channel = snakemake.input["pmc_channel"]
+        channel = get_channel_index(
+            snakemake.params["channels"], snakemake.params["channel_name"]
+        )
         z_start = snakemake.params["z_start"]
         z_stop = snakemake.params["z_end"]
         pmc = img.get_image_data("ZYX", C=channel)[z_start:z_stop]
@@ -64,4 +75,4 @@ if __name__ == "__main__":
             ]
         )
         pmc = exposure.rescale_intensity(pmc, out_range=(0, 1))
-        to_hdf5(pmc, snakemake.output["out"])
+        to_hdf5(pmc, snakemake.output["h5"])

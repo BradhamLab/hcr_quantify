@@ -6,7 +6,7 @@ import bigfish.stack as bf_stack
 import bigfish.plot as bf_plot
 import numpy as np
 import skimage
-from skimage import exposure, io, morphology
+from skimage import exposure, io, morphology, measure
 from skimage.filters import threshold_otsu
 
 BoundingBox = namedtuple("BoundingBox", ["ymin", "ymax", "xmin", "xmax"])
@@ -130,7 +130,7 @@ def count_spots_in_labels(spots, labels):
     return counts
 
 
-def count_spots(
+def quantify_expression(
     img,
     labels,
     voxel_size_z=None,
@@ -148,7 +148,12 @@ def count_spots(
     verbose=False,
 ):
     """
-    Count the number of molecules in an smFISH image
+    Quantify signal an smFISH image.
+
+    Performs absolute and relative quantification of mRNA expression in an smFISH
+    image. Counts the number of molecules for absolute quantification, while
+    relative quantification is done by calculating the mean standardized
+    intensity using Z-scores.
 
     Parameters
     ----------
@@ -195,8 +200,9 @@ def count_spots(
     Returns
     -------
     (np.ndarray, dict)
-        np.ndarray: positions of all identified mRNA molecules.
-        dict: dictionary containing the number of molecules contained in each labeled region.
+        np.ndarray: positions of all detected mRNA molecules.
+        dict: nested dictionary containing quantification for number of spots
+            and mean z-scored intensity for each region in `labels`.
     """
     if verbose:
         print("Cropping image to only include areas with signal...")
@@ -300,10 +306,14 @@ def count_spots(
             cell_label = cropped_labels[each[0], each[1]]
         if cell_label != 0:
             counts[cell_label] += 1
+    intensities = {i: 0 for i in range(1, n_labels + 1)}
+    z_normed_smooth = (smoothed - smoothed.mean()) / smoothed.std()
+    for region in measure.regionprops(cropped_labels, z_normed_smooth):
+        intensities[region.label] = region.mean_intensity
     # spots are in cropped coordinates, shift back to original
     spots_post_decomposition[:, 1] += limits.ymin
     spots_post_decomposition[:, 2] += limits.xmin
-    return spots_post_decomposition, counts  # , smoothed
+    return spots_post_decomposition, {"counts": counts, "intensity": intensities}
 
 
 def get_channel_index(channels, channel):
@@ -333,7 +343,7 @@ if __name__ == "__main__":
         embryo = snakemake.wildcards["embryo"]
         for (gene, fish_channel) in zip(genes, channels):
             fish_data = img.get_image_dask_data("ZYX", C=fish_channel)[start:stop, :, :]
-            spots, counts = count_spots(
+            spots, quant = quantify_expression(
                 fish_data,
                 labels,
                 voxel_size_z=img.physical_pixel_sizes.Z * 1000,
@@ -346,9 +356,10 @@ if __name__ == "__main__":
                 whitehat=True,
                 smooth_method="log",
                 smooth_sigma=1,
-                verbose=True,
+                verbose=False,
             )
-            fish_counts[gene] = counts
+            fish_counts[f"{gene}_spots"] = quant["counts"]
+            fish_counts[f"{gene}_intensity"] = quant["intensity"]
         exprs_df = pd.DataFrame.from_dict(fish_counts)
         exprs_df["embryo"] = embryo
         exprs_df.to_csv(snakemake.output["csv"])

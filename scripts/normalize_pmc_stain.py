@@ -74,5 +74,5 @@ if __name__ == "__main__":
                 for x in pmc
             ]
         )
-        pmc = exposure.rescale_intensity(pmc, out_range=(0, 1))
+        pmc = exposure.rescale_intensity(pmc.astype(float), out_range=(0, 1))
         to_hdf5(pmc, snakemake.output["h5"])

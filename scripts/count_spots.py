@@ -134,18 +134,17 @@ def count_spots(
     img,
     labels,
     voxel_size_z=None,
-    voxel_size_yx=0.67,
-    z_norm=True,
-    bits=12,
-    psf_yx=1,
+    voxel_size_yx=0.67 * 1000,
     psf_z=1,
+    psf_yx=1,
     whitehat=True,
     whitehat_selem=None,
-    smooth_method="log",
+    smooth_method="gaussian",
     smooth_sigma=1,
-    decompose_alpha=0.7,
+    decompose_alpha=0.5,
     decompose_beta=1,
     decompose_gamma=5,
+    bits=12,
     verbose=False,
 ):
     """
@@ -166,12 +165,6 @@ def count_spots(
     psf_yx, psf_z : int, optional
         Theoretical size of the gaussian point-spread function emitted by a spot in the xy plane.
         By default 1.
-    z_norm : boolean, optional
-        Whether to normalize intensity values along the Z-dimension. Default is
-        True, and all slices will be stretched to the same minimum and maximum
-        intensity values.
-    bits : int, optional
-        Bit depth of `img`. Used if `z_norm==True`. Default is 12.
     whitehat : bool, optional
         Whether to perform white tophat filtering prior to image de-noising, by default True
     whitehat_selem : [int, np.ndarray], optional
@@ -193,6 +186,9 @@ def count_spots(
         Multiplicative factor use to compute a gaussian scale, by default 5.
         For more information, see:
         https://big-fish.readthedocs.io/en/stable/detection/dense.html
+    bits : int, optional
+        Bit depth of original image. Used for scaling image while maintaining
+        ob
     verbose : bool, optional
         Whether to verbosely print results and progress.
 
@@ -202,10 +198,6 @@ def count_spots(
         np.ndarray: positions of all identified mRNA molecules.
         dict: dictionary containing the number of molecules contained in each labeled region.
     """
-    if z_norm:
-        if verbose:
-            print("Normalizing intensities across Z slices...")
-            img = normalize_zstack(img, bits)
     if verbose:
         print("Cropping image to only include areas with signal...")
     if img.shape != labels.shape:
@@ -215,17 +207,28 @@ def count_spots(
         )
     limits, __ = select_signal(img)
     # normalize cropped image
-    cropped_img = bf_stack.rescale(crop_to_selection(img, limits))
+    cropped_img = crop_to_selection(img, limits)
     cropped_labels = crop_to_selection(labels, limits)
     n_labels = len(np.unique(labels)) - 1  # subtract one for background
-    if whitehat:
-        cropped_img = morphology.white_tophat(cropped_img, whitehat_selem)
     if smooth_method == "log":
-        smoothed = bf_stack.log_filter(cropped_img, sigma=smooth_sigma)
+        smooth_func = bf_stack.log_filter
     elif smooth_method == "gaussian":
-        smoothed = bf_stack.remove_background_gaussian(cropped_img, sigma=smooth_sigma)
+        smooth_func = bf_stack.remove_background_gaussian
     else:
         raise ValueError(f"Unsupported background filter: {smooth_method}")
+    smoothed = np.stack([smooth_func(x, smooth_sigma) for x in cropped_img])
+    if whitehat:
+        smoothed = np.stack(
+            [morphology.white_tophat(x, whitehat_selem) for x in smoothed]
+        )
+    smoothed = bf_stack.rescale(
+        skimage.img_as_uint(
+            exposure.rescale_intensity(
+                smoothed,
+                in_range=(0, 2 ** bits - 1),
+            )
+        )
+    )
     if voxel_size_z is not None:
         if psf_z is None:
             psf_z = psf_yx * voxel_size_z / voxel_size_yx
@@ -300,7 +303,14 @@ def count_spots(
     # spots are in cropped coordinates, shift back to original
     spots_post_decomposition[:, 1] += limits.ymin
     spots_post_decomposition[:, 2] += limits.xmin
-    return spots_post_decomposition, counts
+    return spots_post_decomposition, counts  # , smoothed
+
+
+def get_channel_index(channels, channel):
+    channel_index = [
+        i for i, x in enumerate(channels.split(";")) if x.lower() == channel.lower()
+    ][0]
+    return channel_index
 
 
 if __name__ == "__main__":
@@ -318,7 +328,7 @@ if __name__ == "__main__":
         start = snakemake.params["z_start"]
         stop = snakemake.params["z_stop"]
         genes = snakemake.params["genes"]
-        channels = snakemake.params["channels"]
+        channels = [get_channel_index(snakemake.params["channels"], x) for x in genes]
         fish_counts = {}
         embryo = snakemake.wildcards["embryo"]
         for (gene, fish_channel) in zip(genes, channels):

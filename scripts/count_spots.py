@@ -1,13 +1,14 @@
 import os
 from collections import namedtuple
 
-import bigfish.detection as bf_detection
-import bigfish.stack as bf_stack
-import bigfish.plot as bf_plot
 import numpy as np
 import skimage
 from skimage import exposure, io, morphology, measure
 from skimage.filters import threshold_otsu
+
+import bigfish.detection as bf_detection
+import bigfish.stack as bf_stack
+import bigfish.plot as bf_plot
 
 BoundingBox = namedtuple("BoundingBox", ["ymin", "ymax", "xmin", "xmax"])
 
@@ -130,13 +131,11 @@ def count_spots_in_labels(spots, labels):
     return counts
 
 
-def quantify_expression(
+def count_spots(
     img,
     labels,
-    voxel_size_z=None,
-    voxel_size_yx=0.67 * 1000,
-    psf_z=1,
-    psf_yx=1,
+    voxel_size_nm,
+    dot_radius_nm,
     whitehat=True,
     whitehat_selem=None,
     smooth_method="gaussian",
@@ -148,12 +147,7 @@ def quantify_expression(
     verbose=False,
 ):
     """
-    Quantify signal an smFISH image.
-
-    Performs absolute and relative quantification of mRNA expression in an smFISH
-    image. Counts the number of molecules for absolute quantification, while
-    relative quantification is done by calculating the mean standardized
-    intensity using Z-scores.
+    Count the number of molecules in an smFISH image
 
     Parameters
     ----------
@@ -162,11 +156,10 @@ def quantify_expression(
     labels : np.ndarray
         Integer array of same shape as `img` denoting regions to interest to quantify.
         Each separate region should be uniquely labeled.
-    voxel_size_z : float, optional
-        The number of microns between each z-slice, by default None and two-dimensional
-        quantification is assumed.
-    voxel_size_yx : float, optional
-        The space occupied by each pixel in microns, by default 0.67.
+    voxel_size_nm : tuple(float, int)
+        Physical dimensions of each voxel in ZYX order.
+    dot_radius_nm : tuple(float, int)
+        Physical size of expected dots.
     psf_yx, psf_z : int, optional
         Theoretical size of the gaussian point-spread function emitted by a spot in the xy plane.
         By default 1.
@@ -200,9 +193,8 @@ def quantify_expression(
     Returns
     -------
     (np.ndarray, dict)
-        np.ndarray: positions of all detected mRNA molecules.
-        dict: nested dictionary containing quantification for number of spots
-            and mean z-scored intensity for each region in `labels`.
+        np.ndarray: positions of all identified mRNA molecules.
+        dict: dictionary containing the number of molecules contained in each labeled region.
     """
     if verbose:
         print("Cropping image to only include areas with signal...")
@@ -213,7 +205,7 @@ def quantify_expression(
         )
     limits, __ = select_signal(img)
     # normalize cropped image
-    cropped_img = crop_to_selection(img, limits)
+    cropped_img = bf_stack.rescale(crop_to_selection(img, limits))
     cropped_labels = crop_to_selection(labels, limits)
     n_labels = len(np.unique(labels)) - 1  # subtract one for background
     if smooth_method == "log":
@@ -227,49 +219,30 @@ def quantify_expression(
         smoothed = np.stack(
             [morphology.white_tophat(x, whitehat_selem) for x in smoothed]
         )
-    smoothed = bf_stack.rescale(
-        skimage.img_as_uint(
-            exposure.rescale_intensity(
-                smoothed,
-                in_range=(0, 2 ** bits - 1),
-            )
+    smoothed = skimage.img_as_uint(
+        exposure.rescale_intensity(
+            smoothed,
+            in_range=(0, 2 ** bits - 1),
         )
     )
-    if voxel_size_z is not None:
-        if psf_z is None:
-            psf_z = psf_yx * voxel_size_z / voxel_size_yx
-        sigma_z, sigma_yx, sigma_yx = bf_stack.get_sigma(
-            voxel_size_z, voxel_size_yx, psf_z, psf_yx
-        )
-        if verbose:
-            print(
-                "standard deviation of the PSF (z axis): {:0.3f} pixels".format(sigma_z)
-            )
-    else:
-        sigma_yx, sigma_yx = bf_stack.get_sigma(
-            voxel_size_z, voxel_size_yx, psf_z, psf_yx
-        )
-        sigma_z = None
+    spot_radius_px = bf_detection.get_object_radius_pixel(
+        voxel_size_nm=voxel_size_nm, object_radius_nm=dot_radius_nm, ndim=3
+    )
     if verbose:
-        print(
-            "standard deviation of the PSF (yx axis): {:0.3f} pixels".format(sigma_yx)
-        )
+        print(f"spot radius (z axis): {spot_radius_px[0]:0.3f} pixels")
+        print(f"spot radius (yx plan): {spot_radius_px[-1]:0.3f} pixels")
     spots, threshold = bf_detection.detect_spots(
         smoothed,
         return_threshold=True,
-        voxel_size_z=voxel_size_z,
-        voxel_size_yx=voxel_size_yx,
-        psf_z=psf_z,
-        psf_yx=psf_yx,
+        voxel_size=voxel_size_nm,
+        spot_radius=dot_radius_nm,
     )
     if verbose:
-        print("plotting threshold optimization for spot detection...")
+        print(f"Optimal threhsold found at {threshold}...")
         bf_plot.plot_elbow(
             smoothed,
-            voxel_size_z=voxel_size_z,
-            voxel_size_yx=voxel_size_yx,
-            psf_z=psf_z,
-            psf_yx=psf_yx,
+            voxel_size=voxel_size_nm,
+            spot_raidus=dot_radius_nm,
         )
     try:
         (
@@ -279,10 +252,8 @@ def quantify_expression(
         ) = bf_detection.decompose_dense(
             smoothed,
             spots,
-            voxel_size_z,
-            voxel_size_yx,
-            psf_z,
-            psf_yx,
+            voxel_size=voxel_size_nm,
+            spot_radius=dot_radius_nm,
             alpha=decompose_alpha,  # alpha impacts the number of spots per candidate region
             beta=decompose_beta,  # beta impacts the number of candidate regions to decompose
             gamma=decompose_gamma,  # gamma the filtering step to denoise the image
@@ -291,11 +262,11 @@ def quantify_expression(
         print("decomposition failed, using originally identified spots")
         spots_post_decomposition = spots
     if verbose:
-        print(f"detected spots before decomposition: {spots.shape[0]}")
         print(
-            f"detected spots after decomposition: {spots_post_decomposition.shape[0]}"
+            f"detected spots before decomposition: {spots.shape[0]}\n"
+            f"detected spots after decomposition: {spots_post_decomposition.shape[0]}\n"
+            f"shape of reference spot for decomposition: {reference_spot.shape}"
         )
-        print(f"shape of reference spot for decomposition: {reference_spot.shape}")
         bf_plot.plot_reference_spot(reference_spot, rescale=True)
     each = spots[0]
     counts = {i: 0 for i in range(1, n_labels + 1)}
@@ -335,14 +306,16 @@ if __name__ == "__main__":
     if snakemake is not None:
         img = AICSImage(snakemake.input["image"])
         labels = np.array(h5py.File(snakemake.input["labels"], "r")["image"])
+        print(f"{len(np.unique(labels) - 1)} labels detected...")
         start = snakemake.params["z_start"]
-        stop = snakemake.params["z_stop"]
+        stop = snakemake.params["z_end"]
         genes = snakemake.params["genes"]
         channels = [get_channel_index(snakemake.params["channels"], x) for x in genes]
         fish_counts = {}
         embryo = snakemake.wildcards["embryo"]
         for (gene, fish_channel) in zip(genes, channels):
-            fish_data = img.get_image_dask_data("ZYX", C=fish_channel)[start:stop, :, :]
+            fish_data = img.get_image_data("ZYX", C=fish_channel)[start:stop, :, :]
+            print(fish_data.shape)
             spots, quant = quantify_expression(
                 fish_data,
                 labels,

@@ -3,13 +3,10 @@
 # Takes as input any microscopy image file, outputs an .h5 file
 # to be used as input for ilastik PMC segmentation
 
-
 import h5py
 import numpy as np
-import pandas as pd
 from aicsimageio import AICSImage
-from scipy import ndimage as ndi
-from skimage import exposure, filters, morphology, transform
+from skimage import exposure
 
 
 def get_channel_index(channels, channel):

@@ -131,7 +131,7 @@ def count_spots_in_labels(spots, labels):
     return counts
 
 
-def count_spots(
+def quantify_expression(
     img,
     labels,
     voxel_size_nm,
@@ -242,7 +242,7 @@ def count_spots(
         bf_plot.plot_elbow(
             smoothed,
             voxel_size=voxel_size_nm,
-            spot_raidus=dot_radius_nm,
+            spot_radius=dot_radius_nm,
         )
     try:
         (
@@ -288,6 +288,7 @@ def count_spots(
 
 
 def get_channel_index(channels, channel):
+    """Get numerical index for channel of interest by searching a string of ';' separated channel names"""
     channel_index = [
         i for i, x in enumerate(channels.split(";")) if x.lower() == channel.lower()
     ][0]
@@ -310,6 +311,7 @@ if __name__ == "__main__":
         start = snakemake.params["z_start"]
         stop = snakemake.params["z_end"]
         genes = snakemake.params["genes"]
+        radius = snakemake.params["radius"]
         channels = [get_channel_index(snakemake.params["channels"], x) for x in genes]
         fish_counts = {}
         embryo = snakemake.wildcards["embryo"]
@@ -319,17 +321,13 @@ if __name__ == "__main__":
             spots, quant = quantify_expression(
                 fish_data,
                 labels,
-                voxel_size_z=img.physical_pixel_sizes.Z * 1000,
-                voxel_size_yx=img.physical_pixel_sizes.X * 1000,
-                psf_z=img.physical_pixel_sizes.X
-                / img.physical_pixel_sizes.Z
-                * 1000
-                * 5,
-                psf_yx=img.physical_pixel_sizes.X * 1000 * 2,
+                voxel_size_nm=[x * 1000 for x in img.physical_pixel_sizes],
+                dot_radius_nm=radius,
                 whitehat=True,
-                smooth_method="log",
-                smooth_sigma=1,
+                smooth_method="gaussian",
+                smooth_sigma=5,
                 verbose=False,
+                bits=img.metadata["attributes"].bitsPerComponentSignificant,
             )
             fish_counts[f"{gene}_spots"] = quant["counts"]
             fish_counts[f"{gene}_intensity"] = quant["intensity"]

@@ -25,33 +25,30 @@ def to_hdf5(image, filename):
     f.close()
 
 
-def clean_pmc_stain(img, size=25):
-    """
-    Preprocessing for PMC stains.
-
-    Binarizes image to find isolated objects. Filters objects by set size.
+def preprocess_slice(img, upper_percentile=99.99, new_min=0, new_max=1):
+    """Preprocess a Z-slice by scaling and equalizing intensities.
 
     Parameters
     ----------
-    img : numpy.ndarray
-        PMC stain to clean.
-    size : int, optional
-        Size threshold for objects. Any object with volume < `size` will be
-        removed. By default, 25
+    img : np.ndarray
+        Image slice to scale and equalize.
+    upper_percentile : float, optional
+        Upper bound to clip intensities for scaling, by default 99.99.
+    new_min : int, optional
+        New minimum intensity value, by default 0.
+    new_max : int, optional
+        New maximum intensity value, by default 1.
+
+    Returns
     -------
     np.ndarray
-        PMC stain with small objects removed.
+        Scaled and equalize image slice.
     """
-    out = []
-    for img_slice in img:
-        equalized = exposure.equalize_adapthist(img_slice)
-        fixed = morphology.closing(
-            equalized > filters.threshold_otsu(equalized), morphology.disk(1)
-        )
-        slice_copy = img_slice.copy()
-        slice_copy[~morphology.remove_small_objects(fixed, size)] = 0
-        out.append(equalized)
-    return np.array(out)
+    lb, ub = np.percentile(img, (0, upper_percentile))
+    out = exposure.equalize_adapthist(
+        exposure.rescale_intensity(img, in_range=(lb, ub), out_range=(new_min, new_max))
+    )
+    return out
 
 
 if __name__ == "__main__":
@@ -70,9 +67,8 @@ if __name__ == "__main__":
         pmc = img.get_image_data("ZYX", C=channel)[z_start:z_stop]
         pmc = np.array(
             [
-                exposure.rescale_intensity(x, out_range=(pmc.min(), pmc.max()))
+                preprocess_slice(x, upper_percentile=100, new_min=0, new_max=1)
                 for x in pmc
             ]
         )
-        pmc = exposure.rescale_intensity(pmc.astype(float), out_range=(0, 1))
         to_hdf5(pmc, snakemake.output["h5"])

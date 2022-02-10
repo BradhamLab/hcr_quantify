@@ -1,88 +1,81 @@
-name: bigfish_env
+name: hcr-quant
 channels:
   - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
   - _openmp_mutex=4.5=1_gnu
-  - backcall=0.2.0=pyhd3eb1b0_0
-  - ca-certificates=2021.9.30=h06a4308_1
-  - certifi=2021.5.30=py36h06a4308_0
-  - entrypoints=0.3=py36_0
-  - ipykernel=5.3.4=py36h5ca1d4c_0
-  - ipython=7.16.1=py36h5ca1d4c_0
-  - ipython_genutils=0.2.0=pyhd3eb1b0_1
-  - jedi=0.17.0=py36_0
-  - jupyter_client=7.0.1=pyhd3eb1b0_0
-  - jupyter_core=4.8.1=py36h06a4308_0
+  - bzip2=1.0.8=h7b6447c_0
+  - ca-certificates=2021.10.26=h06a4308_2
+  - certifi=2020.6.20=pyhd3eb1b0_3
   - ld_impl_linux-64=2.35.1=h7274673_9
   - libffi=3.3=he6710b0_2
   - libgcc-ng=9.3.0=h5101ec6_17
   - libgomp=9.3.0=h5101ec6_17
-  - libsodium=1.0.18=h7b6447c_0
   - libstdcxx-ng=9.3.0=hd4cf53a_17
-  - ncurses=6.2=he6710b0_1
-  - nest-asyncio=1.5.1=pyhd3eb1b0_0
-  - openssl=1.1.1l=h7f8727e_0
-  - parso=0.8.2=pyhd3eb1b0_0
-  - pexpect=4.8.0=pyhd3eb1b0_3
-  - pickleshare=0.7.5=pyhd3eb1b0_1003
-  - pip=21.0.1=py36h06a4308_0
-  - prompt-toolkit=3.0.20=pyhd3eb1b0_0
-  - ptyprocess=0.7.0=pyhd3eb1b0_2
-  - pygments=2.10.0=pyhd3eb1b0_0
-  - python=3.6.13=h12debd9_1
-  - python-dateutil=2.8.2=pyhd3eb1b0_0
-  - pyzmq=22.2.1=py36h295c915_1
-  - readline=8.1=h27cfd23_0
-  - setuptools=58.0.4=py36h06a4308_0
-  - six=1.16.0=pyhd3eb1b0_0
-  - sqlite=3.36.0=hc218d9a_0
+  - libuuid=1.0.3=h7f8727e_2
+  - ncurses=6.3=h7f8727e_2
+  - openssl=1.1.1m=h7f8727e_0
+  - pip=21.2.4=py310h06a4308_0
+  - python=3.10.0=h12debd9_4
+  - readline=8.1.2=h7f8727e_1
+  - setuptools=58.0.4=py310h06a4308_0
+  - sqlite=3.37.2=hc218d9a_0
   - tk=8.6.11=h1ccaba5_0
-  - tornado=6.1=py36h27cfd23_0
-  - traitlets=4.3.3=py36h06a4308_0
-  - wcwidth=0.2.5=pyhd3eb1b0_0
-  - wheel=0.37.0=pyhd3eb1b0_1
+  - tzdata=2021e=hda174b7_0
+  - wheel=0.37.1=pyhd3eb1b0_0
   - xz=5.2.5=h7b6447c_0
-  - zeromq=4.3.4=h2531618_0
-  - zlib=1.2.11=h7b6447c_3
+  - zlib=1.2.11=h7f8727e_4
   - pip:
-    - big-fish==0.5.0
-    - click==8.0.3
+    - aicsimageio==4.5.0
+    - asciitree==0.3.3
+    - big-fish==0.6.1
+    - bioformats-jar==6.7.0.post2
     - cloudpickle==2.0.0
-    - contextvars==2.4
-    - cycler==0.10.0
-    - dask==2021.3.0
-    - decorator==4.4.2
-    - distributed==2021.3.0
-    - heapdict==1.0.1
-    - imagecodecs==2020.5.30
-    - imageio==2.9.0
-    - immutables==0.16
-    - importlib-metadata==4.8.1
-    - kiwisolver==1.3.1
-    - lxml==4.6.3
-    - matplotlib==3.0.2
-    - mrc==0.1.5
-    - msgpack==1.0.2
-    - networkx==2.5.1
-    - numpy==1.16.0
-    - pandas==0.24.0
+    - cycler==0.11.0
+    - dask==2022.1.1
+    - dnspython==2.2.0
+    - elementpath==2.4.0
+    - email-validator==1.1.3
+    - fasteners==0.17.3
+    - fonttools==4.29.1
+    - fsspec==2022.1.0
+    - idna==3.3
+    - imagecodecs==2021.11.20
+    - imageio==2.15.0
+    - imageio-ffmpeg==0.4.5
+    - joblib==1.1.0
+    - jpype1==1.3.0
+    - kiwisolver==1.3.2
+    - locket==0.2.1
+    - lxml==4.7.1
+    - matplotlib==3.5.1
+    - mrc==0.2.0
+    - nd2==0.1.6
+    - networkx==2.6.3
+    - numcodecs==0.9.1
+    - numpy==1.22.2
+    - ome-types==0.2.10
+    - packaging==21.3
+    - pandas==1.4.0
+    - partd==1.2.0
     - pillow==8.4.0
-    - psutil==5.8.0
-    - pyparsing==2.4.7
+    - pint==0.18
+    - psutil==5.9.0
+    - pydantic==1.9.0
+    - pyparsing==3.0.7
+    - python-dateutil==2.8.2
     - pytz==2021.3
-    - pywavelets==1.1.1
+    - pywavelets==1.2.0
     - pyyaml==6.0
-    - readlif==0.6.4
-    - scikit-image==0.14.2
-    - scikit-learn==0.20.2
-    - scipy==1.4.1
-    - seaborn==0.11.2
-    - sortedcontainers==2.4.0
-    - tblib==1.7.0
-    - tifffile==2020.9.3
-    - toolz==0.11.1
-    - typing-extensions==3.10.0.2
-    - zict==2.0.0
-    - zipp==3.6.0
-prefix: /home/dakota/anaconda3/envs/bigfish_env
+    - scikit-image==0.19.1
+    - scikit-learn==1.0.2
+    - scipy==1.8.0
+    - six==1.16.0
+    - threadpoolctl==3.1.0
+    - tifffile==2022.2.9
+    - toolz==0.11.2
+    - wurlitzer==3.0.2
+    - xarray==0.21.1
+    - xmlschema==1.9.2
+    - zarr==2.11.0
+prefix: /home/dakota/anaconda3/envs/hcr-quant

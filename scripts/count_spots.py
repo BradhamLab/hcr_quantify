@@ -131,6 +131,28 @@ def count_spots_in_labels(spots, labels):
     return counts
 
 
+def preprocess_image(
+    img, smooth_method="gaussian", sigma=7, whitehat=True, selem=None, stretch=99.99
+):
+    scaled = exposure.rescale_intensity(
+        img, in_range=tuple(np.percentile(img, [0, stretch]))
+    )
+    if smooth_method == "log":
+        smooth_func = bf_stack.log_filter
+        to_smooth = bf_stack.cast_img_float64(scaled)
+    elif smooth_method == "gaussian":
+        smooth_func = bf_stack.remove_background_gaussian
+        to_smooth = bf_stack.cast_img_uint16(scaled)
+    else:
+        raise ValueError(f"Unsupported background filter: {smooth_method}")
+    if whitehat:
+        f = lambda x, s: morphology.white_tophat(smooth_func(x, s), selem)
+    else:
+        f = lambda x, s: smooth_func(x, s)
+    smoothed = np.stack([f(img_slice, sigma) for img_slice in to_smooth])
+    return bf_stack.cast_img_float64(np.stack(smoothed))
+
+
 def quantify_expression(
     img,
     labels,
@@ -160,9 +182,6 @@ def quantify_expression(
         Physical dimensions of each voxel in ZYX order.
     dot_radius_nm : tuple(float, int)
         Physical size of expected dots.
-    psf_yx, psf_z : int, optional
-        Theoretical size of the gaussian point-spread function emitted by a spot in the xy plane.
-        By default 1.
     whitehat : bool, optional
         Whether to perform white tophat filtering prior to image de-noising, by default True
     whitehat_selem : [int, np.ndarray], optional
@@ -196,41 +215,21 @@ def quantify_expression(
         np.ndarray: positions of all identified mRNA molecules.
         dict: dictionary containing the number of molecules contained in each labeled region.
     """
-    if verbose:
-        print("Cropping image to only include areas with signal...")
-    if img.shape != labels.shape:
-        raise ValueError(
-            "Expected FISH and label images to have the same shape. "
-            f"Received {img.shape} and {labels.shape}"
-        )
     limits, __ = select_signal(img)
-    # normalize cropped image
-    cropped_img = bf_stack.rescale(crop_to_selection(img, limits))
+    cropped_img = crop_to_selection(img, limits)
+    smoothed = preprocess_image(
+        cropped_img, smooth_method, smooth_sigma, whitehat, whitehat_selem, 99.99
+    )
+
     cropped_labels = crop_to_selection(labels, limits)
     n_labels = len(np.unique(labels)) - 1  # subtract one for background
-    if smooth_method == "log":
-        smooth_func = bf_stack.log_filter
-    elif smooth_method == "gaussian":
-        smooth_func = bf_stack.remove_background_gaussian
-    else:
-        raise ValueError(f"Unsupported background filter: {smooth_method}")
-    smoothed = np.stack([smooth_func(x, smooth_sigma) for x in cropped_img])
-    if whitehat:
-        smoothed = np.stack(
-            [morphology.white_tophat(x, whitehat_selem) for x in smoothed]
-        )
-    smoothed = skimage.img_as_uint(
-        exposure.rescale_intensity(
-            smoothed,
-            in_range=(0, 2 ** bits - 1),
-        )
-    )
-    spot_radius_px = bf_detection.get_object_radius_pixel(
-        voxel_size_nm=voxel_size_nm, object_radius_nm=dot_radius_nm, ndim=3
-    )
+
     if verbose:
-        print(f"spot radius (z axis): {spot_radius_px[0]:0.3f} pixels")
-        print(f"spot radius (yx plan): {spot_radius_px[-1]:0.3f} pixels")
+        spot_radius_px = bf_detection.get_object_radius_pixel(
+            voxel_size_nm=voxel_size_nm, object_radius_nm=dot_radius_nm, ndim=3
+        )
+        print("spot radius (z axis): {:0.3f} pixels".format(spot_radius_px[0]))
+        print("spot radius (yx plan): {:0.3f} pixels".format(spot_radius_px[-1]))
     spots, threshold = bf_detection.detect_spots(
         smoothed,
         return_threshold=True,
@@ -238,12 +237,17 @@ def quantify_expression(
         spot_radius=dot_radius_nm,
     )
     if verbose:
-        print(f"Optimal threhsold found at {threshold}...")
+        print(f"{spots.shape[0]} spots detected...")
+        print("plotting threshold optimization for spot detection...")
         bf_plot.plot_elbow(
             smoothed,
             voxel_size=voxel_size_nm,
             spot_radius=dot_radius_nm,
         )
+    decompose_cast = {
+        "gaussian": bf_stack.cast_img_uint16,
+        "log": bf_stack.cast_img_float64,
+    }
     try:
         (
             spots_post_decomposition,
@@ -258,16 +262,16 @@ def quantify_expression(
             beta=decompose_beta,  # beta impacts the number of candidate regions to decompose
             gamma=decompose_gamma,  # gamma the filtering step to denoise the image
         )
+        if verbose:
+            print(
+                f"detected spots before decomposition: {spots.shape[0]}\n"
+                f"detected spots after decomposition: {spots_post_decomposition.shape[0]}\n"
+                f"shape of reference spot for decomposition: {reference_spot.shape}"
+            )
+            bf_plot.plot_reference_spot(reference_spot, rescale=True)
     except RuntimeError:
         print("decomposition failed, using originally identified spots")
         spots_post_decomposition = spots
-    if verbose:
-        print(
-            f"detected spots before decomposition: {spots.shape[0]}\n"
-            f"detected spots after decomposition: {spots_post_decomposition.shape[0]}\n"
-            f"shape of reference spot for decomposition: {reference_spot.shape}"
-        )
-        bf_plot.plot_reference_spot(reference_spot, rescale=True)
     each = spots[0]
     counts = {i: 0 for i in range(1, n_labels + 1)}
     for each in spots_post_decomposition:
@@ -310,19 +314,18 @@ if __name__ == "__main__":
         print(f"{len(np.unique(labels) - 1)} labels detected...")
         start = snakemake.params["z_start"]
         stop = snakemake.params["z_end"]
-        genes = snakemake.params["genes"]
-        radius = snakemake.params["radius"]
+        gene_params = snakemake.params["gene_params"]
+        genes = gene_params.keys()
         channels = [get_channel_index(snakemake.params["channels"], x) for x in genes]
         fish_counts = {}
         embryo = snakemake.wildcards["embryo"]
         for (gene, fish_channel) in zip(genes, channels):
             fish_data = img.get_image_data("ZYX", C=fish_channel)[start:stop, :, :]
-            print(fish_data.shape)
             spots, quant = quantify_expression(
                 fish_data,
                 labels,
                 voxel_size_nm=[x * 1000 for x in img.physical_pixel_sizes],
-                dot_radius_nm=radius,
+                dot_radius_nm=gene_params[gene]["radius"],
                 whitehat=True,
                 smooth_method="gaussian",
                 smooth_sigma=5,

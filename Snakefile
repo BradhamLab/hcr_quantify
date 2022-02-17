@@ -2,7 +2,7 @@ import os
 import pandas as pd
 
 configfile: "files/config.yaml"
-shell.prefix("conda activate napari; ")
+# shell.prefix("conda activate napari; ")
 
 
 OUTDIR = config['output']['dir']
@@ -49,9 +49,11 @@ rule normalize_pmc_stains:
         channel_name='pmc',
         channels=lambda wc: get_embryo_param(wc, 'channel_order'),
         z_start=lambda wc: get_embryo_param(wc, 'z-start'),
-        z_end=lambda wc: get_embryo_param(wc, 'z-end']
+        z_end=lambda wc: get_embryo_param(wc, 'z-end')
     output:
         h5=os.path.join(OUTDIR, "pmc_norm", '{embryo}.h5')
+    conda:
+        "envs/preprocess.yaml"
     script:
         "scripts/normalize_pmc_stain.py"
 
@@ -77,7 +79,9 @@ rule label_pmcs:
         stain=os.path.join(OUTDIR, "pmc_norm", "{embryo}.h5"),
         probs=os.path.join(OUTDIR, "pmc_probs", "{embryo}.h5")
     output:
-        os.path.join(OUTDIR, "labels", "{embryo}_pmc_labels.h5")
+        labels=os.path.join(OUTDIR, "labels", "{embryo}_pmc_labels.h5")
+    conda:
+        "envs/preprocess.yaml"
     script:
         "scripts/label_pmcs.py"
 
@@ -87,12 +91,14 @@ rule quantify_expression:
         image=os.path.join(OUTDIR, 'raw', '{embryo}.nd2'),
         labels=os.path.join(OUTDIR, 'labels', '{embryo}_pmc_labels.h5')
     params:
-        genes=config['quant']['genes'],
-        channels=lambda wc: embryo_log.loc[wc, 'channel_order'],
-        z_start=lambda wc: embryo_log.loc[wc, 'z-start'],
-        z_end=lambda wc: embryo_log.loc[wc, 'z-end']
+        gene_params=config['quant']['genes'],
+        channels=lambda wc: get_embryo_param(wc, 'channel_order'),
+        z_start=lambda wc: get_embryo_param(wc, 'z-start'),
+        z_end=lambda wc: get_embryo_param(wc, 'z-end')
     output:
-        os.path.join(OUTDIR, 'counts', '{embryo}.csv')
+        csv=os.path.join(OUTDIR, 'counts', '{embryo}.csv')
+    conda:
+        "envs/quant.yaml"
     script:
         'scripts/count_spots.py'
 

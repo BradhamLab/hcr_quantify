@@ -39,6 +39,7 @@ dependencies:
     - fasteners==0.17.3
     - fonttools==4.29.1
     - fsspec==2022.1.0
+    - h5py==3.6.0
     - idna==3.3
     - imagecodecs==2021.11.20
     - imageio==2.15.0

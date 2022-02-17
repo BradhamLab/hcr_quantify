@@ -215,8 +215,15 @@ def quantify_expression(
         np.ndarray: positions of all identified mRNA molecules.
         dict: dictionary containing the number of molecules contained in each labeled region.
     """
+
     limits, __ = select_signal(img)
-    cropped_img = crop_to_selection(img, limits)
+    cropped_img = skimage.img_as_float64(
+        exposure.rescale_intensity(
+            crop_to_selection(img, limits),
+            in_range=(0, 2 ** bits - 1),
+            out_range=(0, 1),
+        )
+    )
     smoothed = preprocess_image(
         cropped_img, smooth_method, smooth_sigma, whitehat, whitehat_selem, 99.99
     )
@@ -254,7 +261,7 @@ def quantify_expression(
             dense_regions,
             reference_spot,
         ) = bf_detection.decompose_dense(
-            smoothed,
+            decompose_cast[smooth_method](smoothed),
             spots,
             voxel_size=voxel_size_nm,
             spot_radius=dot_radius_nm,

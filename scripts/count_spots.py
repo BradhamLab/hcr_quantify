@@ -216,7 +216,7 @@ def quantify_expression(
         dict: dictionary containing the number of molecules contained in each labeled region.
     """
 
-    limits, __ = select_signal(img)
+    limits = select_signal(img)
     cropped_img = skimage.img_as_float64(
         exposure.rescale_intensity(
             crop_to_selection(img, limits),

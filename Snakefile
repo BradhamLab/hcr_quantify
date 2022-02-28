@@ -33,7 +33,7 @@ checkpoint symlink_input_files:
         csv=config['input']['logfile'],
     params:
         datadir=config['input']['datadir'],
-        OUTDIR=config['output']['dir']
+        outdir=os.path.join(OUTDIR, 'raw')
     output:
         directory(os.path.join(OUTDIR, "raw"))
     script:

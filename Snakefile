@@ -83,12 +83,14 @@ rule predict_pmcs:
         ilastik_loc=config["ilastik"]["loc"],
     output:
         os.path.join(OUTDIR, "pmc_probs", "{embryo}.h5"),
+    log:
+        os.path.join(OUTDIR, "logs", "prediction", "{embryo}.log")
     shell:
-        "{params.ilastik_loc} --headless "
+        "({params.ilastik_loc} --headless "
         "--project={input.model} "
         "--output_format=hdf5 "
         "--output_filename_format={output} "
-        "{input.image}"
+        "{input.image}) 2> {log}"
 
 
 rule label_pmcs:

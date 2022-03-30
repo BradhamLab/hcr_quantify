@@ -5,6 +5,8 @@ from scipy import ndimage as ndi
 from scipy.spatial.qhull import QhullError
 from skimage import filters, measure, morphology, segmentation
 
+import logging
+
 
 def smooth(x, window_len=11, window="hanning"):
     """
@@ -185,7 +187,7 @@ def backpropogate_split_labels(z_stack, labels):
     return new_stack
 
 
-def z_split_labels(region, n_labels):
+def split_z_disconeccted_labels(region, n_labels):
     """Split labels along the z-plane.
 
     Splits label along the z-plane if labels in individual z-slices have
@@ -266,6 +268,7 @@ def filter_by_area_length_ratio(labels, region, min_ratio=15):
         label with a smaller ratio will be removed
     """
     if region.area / region.image.shape[0] < min_ratio:
+        logging.info(f"Filtering region {region.label} for being too cylindrical")
         assign_to_label(labels, region, None, 0)
 
 
@@ -276,7 +279,14 @@ def renumber_labels(labels):
 
 
 def generate_labels(
-    stain, pmc_probs, p_low=0.5, p_high=0.8, selem=None, max_stacks=7, min_stacks=3
+    stain,
+    pmc_probs,
+    p_low=0.5,
+    p_high=0.8,
+    selem=None,
+    max_stacks=7,
+    min_stacks=3,
+    split_disconnected=True,
 ):
     """Generate PMC labels within a confocal image.
 
@@ -303,19 +313,19 @@ def generate_labels(
         The minimum number of slices a label should occupy before removing,
         by default 3
 
+
     Returns
     -------
     np.ndarray
         3D image containing PMC segmentations.
     """
     if selem is None:
-        disk = morphology.disk(2)
-        selem = np.zeros((3, *disk.shape))
-        selem[0, 1:4, 1:4] = morphology.disk(1)
-        selem[1, :] = disk
-        selem[2, 1:4, 1:4] = morphology.disk(1)
+        selem = morphology.disk(2)
     pmc_seg = filters.apply_hysteresis_threshold(pmc_probs, p_low, p_high)
-    seeds = measure.label(morphology.binary_opening(pmc_seg, selem=selem))
+    # seeds = measure.label(morphology.binary_opening(pmc_seg, selem=selem))
+    seeds = measure.label(
+        np.array([morphology.binary_opening(x, selem=selem) for x in pmc_seg])
+    )
     try:
         gradients = filters.sobel(stain, axis=0)
     except TypeError:
@@ -325,10 +335,10 @@ def generate_labels(
         seeds,
         mask=np.stack(
             morphology.closing(
-                ndi.binary_fill_holes(x, morphology.disk(2)),
+                ndi.binary_fill_holes(x, selem),
                 None,
             )
-            for x in pmc_seg
+            for x in pmc_probs > 0.5
         ),
     )
     n_labels = len(np.unique(labels)) - 1
@@ -339,6 +349,9 @@ def generate_labels(
         labels[region.slice][filled] = region.label
         # assign_to_label(labels, region, (slice(None), slice(None), slice(None)), region.label)
 
+    for region in measure.regionprops(labels):
+        if region.area > 600:
+            strict_pmc_prediction(region, pmc_probs, labels, 0.8)
     # check for abnormally large labels, possibly merged PMCS, so divide labels
     # if they separate in the z-plane
     for region in measure.regionprops(labels):
@@ -346,9 +359,15 @@ def generate_labels(
             region.feret_diameter_max
         except QhullError:
             continue
-        if region.feret_diameter_max > 20:
-            split, n_labels_new = z_split_labels(region, n_labels)
+        if region.feret_diameter_max > 20 and split_disconnected:
+            logging.info(
+                f"Region {region.label} exceeded diamter theshold, splitting on Z disconnects"
+            )
+            split, n_labels_new = split_z_disconeccted_labels(region, n_labels)
             if n_labels != n_labels_new:
+                logging.info(
+                    f"Region {region.label} split into {n_labels_new - n_labels} regions."
+                )
                 assign_to_label(labels, region, None, 0)
                 for each in np.unique(split):
                     if each != 0:
@@ -356,15 +375,21 @@ def generate_labels(
             n_labels = n_labels_new
 
     # a check to ensure we're keeping track properly
-    assert n_labels == len(measure.regionprops(labels))
+    # assert n_labels == len(measure.regionprops(labels))
 
     # find abnormally long tracks, check for local minima in area size that
     # would indicate stacked pmcs. Additionally clean up small tails in labels.
     for region in measure.regionprops(labels):
         n_stacks = np.unique(region.coords[:, 0]).size
         if n_stacks > max_stacks:
+            logging.info(
+                f"Region {region.label} exceed maximum z-length, splitting by area."
+            )
             n_labels = split_labels_by_area(labels, region, n_labels)
         elif n_stacks < min_stacks:
+            logging.info(
+                f"Region {region.label} only spans {region.image.shape[0]} z-slices: removing."
+            )
             assign_to_label(labels, region, None, 0)
         filter_by_area_length_ratio(labels, region, min_ratio=15)
         filter_small_ends(labels, region, min_pixels=5)
@@ -423,15 +448,51 @@ def combine_segmentations(s1, s2):
     return final
 
 
+def strict_pmc_prediction(region, pmc_probs, labels, threshold):
+    logging.info(
+        f"Label {region.label} exceeds area with A={region.area}, attempting to split."
+    )
+    # smooth probabilities due to strict thresholding
+    smoothed = np.array([filters.gaussian(x) for x in pmc_probs[region.slice]])
+    split = False
+    t = threshold
+    # def split_origin_label
+    while t < 1 and not split:
+        split_labels = measure.label(
+            np.array([ndi.binary_opening(x) for x in smoothed > t])
+        )
+
+        if split_labels.max() > 1:
+            split = True
+            logging.info(
+                f"Label {region.label} split into {split_labels.max()} regions with t={t}."
+            )
+            # bounding box may include non-label object, remove from new labels
+            split_labels[~region.image] = 0
+
+            # fill in new labels to original area
+            flooded = segmentation.watershed(
+                np.zeros_like(region.image), split_labels, mask=region.image
+            )
+            # increment for new label numbers
+            flooded += labels.max()
+            for next in measure.regionprops(flooded):
+                if next.area > 600:
+                    logging.debug("area threshold exceeded in split label")
+            labels[region.slice][region.image] = flooded[region.image]
+        t += 0.025
+
+
 def find_pmcs(
     stain,
     pmc_probs,
     max_stacks=7,
     min_stacks=3,
-    p_low_loose=0.5,
-    p_high_loose=0.8,
-    p_low_strict=0.6,
-    p_high_strict=0.85,
+    p_low=0.45,
+    p_high=0.5,
+    selem=None,
+    area_thresh=600,
+    strict_threshold=0.8,
 ):
     """
     Segment each PMC in a 3D confocal image.
@@ -451,22 +512,25 @@ def find_pmcs(
     min_stacks : int, optional
         The minimum number of slices a label should occupy before removing,
         by default 3
-    p_low_loose : float, optional
+    p_low : float, optional
         Lower probabilitiy bound for considering a pixel a PMC during loose
         segmentation. Used in `filters.apply_hysteresis_threshold()`,
-        by default 0.5
-    p_high_loose : float, optional
+        by default 0.45
+    p_high : float, optional
         Higher probabilitiy bound for considering a pixel a PMC during loose
         segmentation. Used in `filters.apply_hysteresis_threshold()`,
-        by default 0.8
-    p_low_strict : float, optional
-        Lower probabilitiy bound for considering a pixel a PMC during stricter
-        segmentation. Used in `filters.apply_hysteresis_threshold()`,
-        by default 0.6
-    p_high_strict : float, optional
+        by default 0.5
+    selem : np.ndarray, optional
+        Structuring element for morphological operations. Default is None, and
+        skimage/scipy.ndimage defaults will be used.
+    area_thresh : float, optional
+        Maximum area for a single label. Any label exceeding the threshold will
+        be attempted to be split into separate labels using stricter thresholding
+        and segmentation. Default is 600.
+    strict_threshold : float, optional
         Higher probabilitiy bound for considering a pixel a PMC during stricter
-        segmentation. Used in `filters.apply_hysteresis_threshold()`,
-        by default 0.85
+        segmentation. Used if the area of a region exceeds `area_thresh`, by
+        default 0.8
 
     Returns
     -------
@@ -475,23 +539,22 @@ def find_pmcs(
         numbered region represents a unique PMC.
     """
 
-    labels1 = generate_labels(
+    labels = generate_labels(
         stain,
         pmc_probs,
-        p_low=p_low_loose,
-        p_high=p_high_loose,
+        p_low=p_low,
+        p_high=p_high,
+        selem=selem,
         max_stacks=max_stacks,
         min_stacks=min_stacks,
+        split_disconnected=False,
     )
-    labels2 = generate_labels(
-        stain,
-        pmc_probs,
-        p_low=p_low_strict,
-        p_high=p_high_strict,
-        max_stacks=max_stacks,
-        min_stacks=min_stacks,
-    )
-    return combine_segmentations(labels1, labels2)
+    # check labels for large regions, attempt to separate with stricter thresholding
+    for region in measure.regionprops(labels):
+        if region.area > area_thresh:
+            strict_pmc_prediction(region, pmc_probs, labels, strict_threshold)
+    renumber_labels(labels)
+    return labels
 
 
 def labels_to_hdf5(image, filename):
@@ -501,12 +564,12 @@ def labels_to_hdf5(image, filename):
 
 
 if __name__ == "__main__":
+    logging.getLogger().setLevel(logging.INFO)
     try:
         snakemake
     except NameError:
         snakemake = None
     if snakemake is not None:
-
         pmc_probs = np.array(h5py.File(snakemake.input["probs"], "r")["exported_data"])[
             :, :, :, 1
         ]
@@ -518,6 +581,47 @@ if __name__ == "__main__":
             p_high=0.5,
             selem=None,
             max_stacks=7,
-            min_stacks=3,
+            min_stacks=2,
+            split_disconnected=False,
         )
         labels_to_hdf5(pmc_segmentation, snakemake.output["labels"])
+    else:
+        import os
+        import napari
+
+        start_file = "DMSO/Replicate3/18hpf_DMSO_R3_emb1005.nd2"
+        wc = start_file.replace(".nd2", "").replace("_", "-").replace("/", "_")
+        pmc_probs = np.array(
+            h5py.File(os.path.join("data", "pmc_probs", f"{wc}.h5"), "r")[
+                "exported_data"
+            ]
+        )[:, :, :, 1]
+        pmc_stain = np.array(
+            h5py.File(os.path.join("data", "pmc_norm", f"{wc}.h5"))["image"]
+        )
+        pmc_segmentation = generate_labels(
+            pmc_stain,
+            pmc_probs,
+            p_low=0.45,
+            p_high=0.5,
+            selem=None,
+            max_stacks=7,
+            min_stacks=2,
+            split_disconnected=False,
+        )
+        labels2 = find_pmcs(pmc_stain, pmc_probs, strict_threshold=0.8)
+        with napari.gui_qt():
+            viewer = napari.Viewer()
+            viewer.add_image(pmc_stain, name="pmc", scale=[3.1, 1, 1])
+            viewer.add_labels(pmc_segmentation, scale=[3.1, 1, 1], name="labels")
+            try:
+                viewer.add_labels(labels2, scale=[3.1, 1, 1], name="labels-adjusted")
+            except NameError:
+                pass
+            viewer.add_image(
+                pmc_probs,
+                scale=[3.1, 1, 1],
+                colormap="red",
+                blending="additive",
+                name="probs",
+            )

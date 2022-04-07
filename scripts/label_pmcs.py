@@ -623,7 +623,7 @@ if __name__ == "__main__":
             :, :, :, 1
         ]
         pmc_stain = np.array(h5py.File(snakemake.input["stain"], "r")["image"])
-        pmc_segmentation = generate_labels(
+        pmc_segmentation = find_pmcs(
             pmc_stain,
             pmc_probs,
             p_low=0.45,
@@ -635,7 +635,6 @@ if __name__ == "__main__":
             area_w_diameter=500,
             d_threshold=15,
             strict_threshold=0.8,
-            split_disconnected=False,
         )
         labels_to_hdf5(pmc_segmentation, snakemake.output["labels"])
     else:

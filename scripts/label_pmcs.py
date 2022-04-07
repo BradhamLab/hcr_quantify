@@ -99,10 +99,17 @@ def get_z_regions(region):
     list[skimage.measure.RegionProperties]
         Separte 2D regions comprising `region`
     """
-    return [measure.regionprops(x.astype(int))[0] for x in region.image]
+    try:
+        return [measure.regionprops(x.astype(int))[0] for x in region.image]
+    except IndexError:
+        print(region.label)
+        import zarr
+
+        zarr.save(f"tmp/{region.label}_failed.zarr", region.image)
+        raise IndentationError
 
 
-def split_labels_by_area(labels, region, n_labels):
+def split_labels_by_area(labels, region):
     """Split a label based on local minimas of measured areas.
 
     Splits a long label along the z-axis at points of locally minimal area.
@@ -114,8 +121,6 @@ def split_labels_by_area(labels, region, n_labels):
         3D image containing labelled regions
     region : skimage.measure.RegionProperties
         Long region to split
-    n_labels : int
-        The total number of objects found in `labels`.
 
     Returns
     -------
@@ -125,6 +130,7 @@ def split_labels_by_area(labels, region, n_labels):
     z_regions = get_z_regions(region)
     areas = np.array([x.area for x in z_regions])
     splits = signal.argrelextrema(smooth(areas, 2, "hamming"), np.less)[0]
+    n_labels = labels.max()
     for i, split in enumerate(splits):
         new_label = n_labels + 1
         if split != splits[-1]:
@@ -132,8 +138,7 @@ def split_labels_by_area(labels, region, n_labels):
         else:
             z_slice = slice(split, None)
         assign_to_label(labels, region, (z_slice, slice(None), slice(None)), new_label)
-        n_labels += 1
-    return n_labels
+        n_labels = new_label
 
 
 def filter_small_ends(labels, region, min_pixels=5):
@@ -185,6 +190,12 @@ def backpropogate_split_labels(z_stack, labels):
             mask=z_stack[i - 1, :, :],
         )
     return new_stack
+
+
+# def is_disconnected(region):
+#     disconnected = False
+#     for z in range()
+#     segmented = measure.label(region.image):
 
 
 def split_z_disconeccted_labels(region, n_labels):
@@ -286,6 +297,7 @@ def generate_labels(
     selem=None,
     max_stacks=7,
     min_stacks=3,
+    max_area=600,
     split_disconnected=True,
 ):
     """Generate PMC labels within a confocal image.
@@ -341,7 +353,7 @@ def generate_labels(
             for x in pmc_probs > 0.5
         ),
     )
-    n_labels = len(np.unique(labels)) - 1
+    n_labels = labels.max()
 
     # close up any holes in labels
     for region in measure.regionprops(labels):
@@ -350,7 +362,7 @@ def generate_labels(
         # assign_to_label(labels, region, (slice(None), slice(None), slice(None)), region.label)
 
     for region in measure.regionprops(labels):
-        if region.area > 600:
+        if region.area > max_area:
             strict_pmc_prediction(region, pmc_probs, labels, 0.8)
     # check for abnormally large labels, possibly merged PMCS, so divide labels
     # if they separate in the z-plane
@@ -385,7 +397,7 @@ def generate_labels(
             logging.info(
                 f"Region {region.label} exceed maximum z-length, splitting by area."
             )
-            n_labels = split_labels_by_area(labels, region, n_labels)
+            split_labels_by_area(labels, region)
         elif n_stacks < min_stacks:
             logging.info(
                 f"Region {region.label} only spans {region.image.shape[0]} z-slices: removing."
@@ -456,6 +468,7 @@ def strict_pmc_prediction(region, pmc_probs, labels, threshold):
     smoothed = np.array([filters.gaussian(x) for x in pmc_probs[region.slice]])
     split = False
     t = threshold
+    n_labels = labels.max()
     # def split_origin_label
     while t < 1 and not split:
         split_labels = measure.label(
@@ -474,11 +487,17 @@ def strict_pmc_prediction(region, pmc_probs, labels, threshold):
             flooded = segmentation.watershed(
                 np.zeros_like(region.image), split_labels, mask=region.image
             )
-            # increment for new label numbers
-            flooded += labels.max()
-            for next in measure.regionprops(flooded):
-                if next.area > 600:
+            # re-assign label values to avoid conflict with previous labels + maintain
+            # consistency
+            for r in measure.regionprops(flooded):
+                if r.label == 1:
+                    assign_to_label(flooded, r, None, region.label)
+                else:
+                    assign_to_label(flooded, r, None, n_labels + 1)
+                    n_labels += 1
+                if r.area > 600:
                     logging.debug("area threshold exceeded in split label")
+            # assign newly split regions back to original labels
             labels[region.slice][region.image] = flooded[region.image]
         t += 0.025
 
@@ -493,6 +512,8 @@ def find_pmcs(
     selem=None,
     min_area=55,
     max_area=600,
+    area_w_diameter=500,
+    d_threshold=15,
     strict_threshold=0.8,
 ):
     """
@@ -532,6 +553,14 @@ def find_pmcs(
         Maximum area for a single label. Any label exceeding the threshold will
         be attempted to be split into separate labels using stricter thresholding
         and segmentation. Default is 600.
+    area_w_diameter : float, optional
+        Maximum area of label allowed when the diameter also exceed a specified
+        value. Default is 500. Labels that exceed both criteria will be further
+        segmented.
+    d_threshold : float, optional
+        Maximum diameter allowed for larger labels. Default is 15, and labels
+        that exceed both `d_threhshold` and `area_w_diameter` criteria will be
+        further segmented.
     strict_threshold : float, optional
         Higher probabilitiy bound for considering a pixel a PMC during stricter
         segmentation. Used if the area of a region exceeds `area_thresh`, by
@@ -554,11 +583,24 @@ def find_pmcs(
         min_stacks=min_stacks,
         split_disconnected=False,
     )
-    # check labels for large regions, attempt to separate with stricter thresholding
+    # further segment large label blocks using strict segmentation values
     for region in measure.regionprops(labels):
         if region.area > max_area:
             strict_pmc_prediction(region, pmc_probs, labels, strict_threshold)
-        elif region.area < min_area:
+        elif region.area > area_w_diameter and region.feret_diameter_max > d_threshold:
+            logging.info(
+                "Label %s exceeds combined area and diameter threshold: A=%d, D=%0.2f",
+                region.label,
+                region.area,
+                region.feret_diameter_max,
+            )
+            strict_pmc_prediction(region, pmc_probs, labels, strict_threshold)
+    # remove labels deemed to small to be PMCs
+    for region in measure.regionprops(labels):
+        if region.area < min_area:
+            logging.info(
+                "Label %s does not meet area threshold. Remvoing.", region.label
+            )
             assign_to_label(labels, region, slc=None, new_label=0)
     renumber_labels(labels)
     return labels
@@ -571,12 +613,12 @@ def labels_to_hdf5(image, filename):
 
 
 if __name__ == "__main__":
-    logging.getLogger().setLevel(logging.INFO)
     try:
         snakemake
     except NameError:
         snakemake = None
     if snakemake is not None:
+        logging.basicConfig(filename=snakemake.log[0], level=logging.INFO)
         pmc_probs = np.array(h5py.File(snakemake.input["probs"], "r")["exported_data"])[
             :, :, :, 1
         ]
@@ -589,6 +631,10 @@ if __name__ == "__main__":
             selem=None,
             max_stacks=7,
             min_stacks=2,
+            max_area=600,
+            area_w_diameter=500,
+            d_threshold=15,
+            strict_threshold=0.8,
             split_disconnected=False,
         )
         labels_to_hdf5(pmc_segmentation, snakemake.output["labels"])
@@ -596,7 +642,8 @@ if __name__ == "__main__":
         import os
         import napari
 
-        start_file = "DMSO/groupA/18_DMSO_emb1002.nd2"
+        logging.getLogger().setLevel(logging.INFO)
+        start_file = "MK886/MK_2_0/replicate3/18hpf_MK2uM_R3_emb9.nd2"
         wc = start_file.replace(".nd2", "").replace("_", "-").replace("/", "_")
         pmc_probs = np.array(
             h5py.File(os.path.join("data", "pmc_probs", f"{wc}.h5"), "r")[

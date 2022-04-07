@@ -491,7 +491,8 @@ def find_pmcs(
     p_low=0.45,
     p_high=0.5,
     selem=None,
-    area_thresh=600,
+    min_area=55,
+    max_area=600,
     strict_threshold=0.8,
 ):
     """
@@ -523,7 +524,11 @@ def find_pmcs(
     selem : np.ndarray, optional
         Structuring element for morphological operations. Default is None, and
         skimage/scipy.ndimage defaults will be used.
-    area_thresh : float, optional
+    min_area : float, optional
+        Minimum area for a single label. Any label with an area below the
+        threshold will be dropped. This will occurr *prior* to any strict
+        thresholding of large labels. The default is 55.
+    max_area : float, optional
         Maximum area for a single label. Any label exceeding the threshold will
         be attempted to be split into separate labels using stricter thresholding
         and segmentation. Default is 600.
@@ -551,8 +556,10 @@ def find_pmcs(
     )
     # check labels for large regions, attempt to separate with stricter thresholding
     for region in measure.regionprops(labels):
-        if region.area > area_thresh:
+        if region.area > max_area:
             strict_pmc_prediction(region, pmc_probs, labels, strict_threshold)
+        elif region.area < min_area:
+            assign_to_label(labels, region, slc=None, new_label=0)
     renumber_labels(labels)
     return labels
 
@@ -589,7 +596,7 @@ if __name__ == "__main__":
         import os
         import napari
 
-        start_file = "DMSO/Replicate3/18hpf_DMSO_R3_emb1005.nd2"
+        start_file = "DMSO/groupA/18_DMSO_emb1002.nd2"
         wc = start_file.replace(".nd2", "").replace("_", "-").replace("/", "_")
         pmc_probs = np.array(
             h5py.File(os.path.join("data", "pmc_probs", f"{wc}.h5"), "r")[
@@ -614,6 +621,7 @@ if __name__ == "__main__":
             viewer = napari.Viewer()
             viewer.add_image(pmc_stain, name="pmc", scale=[3.1, 1, 1])
             viewer.add_labels(pmc_segmentation, scale=[3.1, 1, 1], name="labels")
+            viewer.add_labels(pmc_segmentation == 55, scale=[3.1, 1, 1], name="55")
             try:
                 viewer.add_labels(labels2, scale=[3.1, 1, 1], name="labels-adjusted")
             except NameError:

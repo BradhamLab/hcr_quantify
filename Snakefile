@@ -99,6 +99,8 @@ rule label_pmcs:
         probs=os.path.join(OUTDIR, "pmc_probs", "{embryo}.h5"),
     output:
         labels=os.path.join(OUTDIR, "labels", "{embryo}_pmc_labels.h5"),
+    log:
+        log=os.path.join("logs", "labels", "{embryo}.log")
     conda:
         "envs/preprocess.yaml"
     script:

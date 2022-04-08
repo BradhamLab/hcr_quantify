@@ -32,8 +32,8 @@ embryo_log.set_index("wildcard", inplace=True)
 
 rule all:
     input:
-        lambda x: aggregate_checkpoint_output(x, "labels/{embryo}_pmc_labels.h5"),
-        # os.path.join(OUTDIR, 'final', 'counts.csv')
+        # lambda x: aggregate_checkpoint_output(x, "labels/{embryo}_pmc_labels.h5"),
+        os.path.join(OUTDIR, 'final', 'counts.csv')
 
 
 rule debug_conda:

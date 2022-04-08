@@ -75,10 +75,10 @@ def select_signal(image, p_in_focus=0.75, margin_width=10):
     projected_2d = bf_stack.maximum_projection(selected)
     foreground = np.where(projected_2d > threshold_otsu(projected_2d))
     limits = BoundingBox(
-        foreground[0].min() - margin_width,
-        foreground[0].max() + margin_width,
-        foreground[1].min() - margin_width,
-        foreground[1].max() + margin_width,
+        min(foreground[0].min() - margin_width, 0),
+        max(foreground[0].max() + margin_width, image.shape[0]),
+        min(foreground[1].min() - margin_width, 0),
+        max(foreground[1].max() + margin_width, image.shape[1]),
     )
     return limits
 
@@ -156,8 +156,8 @@ def preprocess_image(
 
 
 def quantify_expression(
-    img,
-    labels,
+    fish_img,
+    cell_labels,
     voxel_size_nm,
     dot_radius_nm,
     whitehat=True,
@@ -175,9 +175,9 @@ def quantify_expression(
 
     Parameters
     ----------
-    img : np.ndarray
+    fish_img : np.ndarray
         Image in which to perform molecule counting
-    labels : np.ndarray
+    cell_labels : np.ndarray
         Integer array of same shape as `img` denoting regions to interest to quantify.
         Each separate region should be uniquely labeled.
     voxel_size_nm : tuple(float, int)
@@ -218,10 +218,10 @@ def quantify_expression(
         dict: dictionary containing the number of molecules contained in each labeled region.
     """
 
-    limits = select_signal(img)
+    limits = select_signal(fish_img)
     cropped_img = skimage.img_as_float64(
         exposure.rescale_intensity(
-            crop_to_selection(img, limits),
+            crop_to_selection(fish_img, limits),
             in_range=(0, 2 ** bits - 1),
             out_range=(0, 1),
         )
@@ -230,8 +230,8 @@ def quantify_expression(
         cropped_img, smooth_method, smooth_sigma, whitehat, whitehat_selem, 99.99
     )
 
-    cropped_labels = crop_to_selection(labels, limits)
-    n_labels = len(np.unique(labels)) - 1  # subtract one for background
+    cropped_labels = crop_to_selection(cell_labels, limits)
+    n_labels = len(np.unique(cell_labels)) - 1  # subtract one for background
 
     if verbose:
         spot_radius_px = bf_detection.get_object_radius_pixel(
@@ -289,7 +289,7 @@ def quantify_expression(
         spots_post_decomposition = spots
     each = spots[0]
     counts = {i: 0 for i in range(1, n_labels + 1)}
-    expression_3d = np.zeros((2,) + img.shape)
+    expression_3d = np.zeros((2,) + fish_img.shape)
     # get slices to account for cropping
     yslice = slice(limits.ymin, limits.ymax)
     xslice = slice(limits.xmin, limits.xmax)
@@ -335,7 +335,7 @@ if __name__ == "__main__":
         snakemake = None
     if snakemake is not None:
         logging.basicConfig(filename=snakemake.log[0], level=logging.INFO)
-        img = AICSImage(snakemake.input["image"])
+        raw_img = AICSImage(snakemake.input["image"])
         labels = np.array(h5py.File(snakemake.input["labels"], "r")["image"])
         logging.info("%d labels detected.", len(np.unique(labels) - 1))
         start = snakemake.params["z_start"]
@@ -347,17 +347,17 @@ if __name__ == "__main__":
         summarized_images = [None] * len(channels)
         embryo = snakemake.wildcards["embryo"]
         for i, (gene, fish_channel) in enumerate(zip(genes, channels)):
-            fish_data = img.get_image_data("ZYX", C=fish_channel)[start:stop, :, :]
+            fish_data = raw_img.get_image_data("ZYX", C=fish_channel)[start:stop, :, :]
             spots, quant, image = quantify_expression(
                 fish_data,
                 labels,
-                voxel_size_nm=[x * 1000 for x in img.physical_pixel_sizes],
+                voxel_size_nm=[x * 1000 for x in raw_img.physical_pixel_sizes],
                 dot_radius_nm=gene_params[gene]["radius"],
                 whitehat=True,
                 smooth_method="gaussian",
                 smooth_sigma=5,
                 verbose=False,
-                bits=img.metadata["attributes"].bitsPerComponentSignificant,
+                bits=12,  # img.metadata["attributes"].bitsPerComponentSignificant,
             )
             fish_counts[f"{gene}_spots"] = quant["counts"]
             fish_counts[f"{gene}_intensity"] = quant["intensity"]
@@ -365,7 +365,6 @@ if __name__ == "__main__":
         # write summarized expression images to netcdf using Xarray to keep
         # track of dims
         out_image = np.array(summarized_images)
-        print(out_image.shape)
         xr.DataArray(
             data=out_image,
             coords={"gene": genes, "measure": ["spots", "intensity"]},

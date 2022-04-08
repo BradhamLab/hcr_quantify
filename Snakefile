@@ -117,7 +117,10 @@ rule quantify_expression:
         z_start=lambda wc: get_embryo_param(wc, "z-start"),
         z_end=lambda wc: get_embryo_param(wc, "z-end"),
     output:
+        image=os.path.join(OUTDIR, "expression", "{embryo}.nc"),
         csv=os.path.join(OUTDIR, "counts", "{embryo}.csv"),
+    log:
+        "logs/quant/{embryo}.log"
     conda:
         "envs/quant.yaml"
     script:

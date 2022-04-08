@@ -1,7 +1,9 @@
 import os
 from collections import namedtuple
+import logging
 
 import numpy as np
+import xarray as xr
 import skimage
 from skimage import exposure, io, morphology, measure
 from skimage.filters import threshold_otsu
@@ -269,6 +271,12 @@ def quantify_expression(
             beta=decompose_beta,  # beta impacts the number of candidate regions to decompose
             gamma=decompose_gamma,  # gamma the filtering step to denoise the image
         )
+        logging.info(
+            "detected spots before decomposition: %d\n"
+            "detected spots after decomposition: %d",
+            spots.shape[0],
+            spots_post_decomposition.shape[0],
+        )
         if verbose:
             print(
                 f"detected spots before decomposition: {spots.shape[0]}\n"
@@ -277,25 +285,35 @@ def quantify_expression(
             )
             bf_plot.plot_reference_spot(reference_spot, rescale=True)
     except RuntimeError:
-        print("decomposition failed, using originally identified spots")
+        logging.warning("decomposition failed, using originally identified spots")
         spots_post_decomposition = spots
     each = spots[0]
     counts = {i: 0 for i in range(1, n_labels + 1)}
+    expression_3d = np.zeros((2,) + img.shape)
+    # get slices to account for cropping
+    yslice = slice(limits.ymin, limits.ymax)
+    xslice = slice(limits.xmin, limits.xmax)
     for each in spots_post_decomposition:
-        if len(each) == 3:
-            cell_label = cropped_labels[each[0], each[1], each[2]]
-        else:
-            cell_label = cropped_labels[each[0], each[1]]
+        spot_coord = tuple(each)
+        cell_label = cropped_labels[spot_coord]
         if cell_label != 0:
             counts[cell_label] += 1
+            expression_3d[0, :, yslice, xslice][spot_coord] += 1
     intensities = {i: 0 for i in range(1, n_labels + 1)}
     z_normed_smooth = (smoothed - smoothed.mean()) / smoothed.std()
     for region in measure.regionprops(cropped_labels, z_normed_smooth):
         intensities[region.label] = region.mean_intensity
+        expression_3d[1, :, yslice, xslice][region.slice][
+            region.image
+        ] = region.mean_intensity
     # spots are in cropped coordinates, shift back to original
     spots_post_decomposition[:, 1] += limits.ymin
     spots_post_decomposition[:, 2] += limits.xmin
-    return spots_post_decomposition, {"counts": counts, "intensity": intensities}
+    return (
+        spots_post_decomposition,
+        {"counts": counts, "intensity": intensities},
+        expression_3d,
+    )
 
 
 def get_channel_index(channels, channel):
@@ -316,19 +334,21 @@ if __name__ == "__main__":
     except NameError:
         snakemake = None
     if snakemake is not None:
+        logging.basicConfig(filename=snakemake.log[0], level=logging.INFO)
         img = AICSImage(snakemake.input["image"])
         labels = np.array(h5py.File(snakemake.input["labels"], "r")["image"])
-        print(f"{len(np.unique(labels) - 1)} labels detected...")
+        logging.info("%d labels detected.", len(np.unique(labels) - 1))
         start = snakemake.params["z_start"]
         stop = snakemake.params["z_end"]
         gene_params = snakemake.params["gene_params"]
-        genes = gene_params.keys()
+        genes = list(gene_params.keys())
         channels = [get_channel_index(snakemake.params["channels"], x) for x in genes]
         fish_counts = {}
+        summarized_images = [None] * len(channels)
         embryo = snakemake.wildcards["embryo"]
-        for (gene, fish_channel) in zip(genes, channels):
+        for i, (gene, fish_channel) in enumerate(zip(genes, channels)):
             fish_data = img.get_image_data("ZYX", C=fish_channel)[start:stop, :, :]
-            spots, quant = quantify_expression(
+            spots, quant, image = quantify_expression(
                 fish_data,
                 labels,
                 voxel_size_nm=[x * 1000 for x in img.physical_pixel_sizes],
@@ -341,6 +361,53 @@ if __name__ == "__main__":
             )
             fish_counts[f"{gene}_spots"] = quant["counts"]
             fish_counts[f"{gene}_intensity"] = quant["intensity"]
+            summarized_images[i] = image
+        # write summarized expression images to netcdf using Xarray to keep
+        # track of dims
+        out_image = np.array(summarized_images)
+        print(out_image.shape)
+        xr.DataArray(
+            data=out_image,
+            coords={"gene": genes, "measure": ["spots", "intensity"]},
+            dims=["gene", "measure", "Z", "Y", "X"],
+        ).to_netcdf(snakemake.output["image"])
         exprs_df = pd.DataFrame.from_dict(fish_counts)
-        exprs_df["embryo"] = embryo
-        exprs_df.to_csv(snakemake.output["csv"])
+        exprs_df.index.name = "label"
+        physical_properties = (
+            pd.DataFrame(
+                measure.regionprops_table(
+                    labels,
+                    properties={
+                        "label",
+                        "centroid",
+                        "area",
+                        "equivalent_diameter",
+                    },
+                )
+            )
+            .rename(
+                columns={
+                    "centroid-0": "Z",
+                    "centroid-1": "Y",
+                    "centroid-2": "X",
+                    "equivalent_diameter": "diameter",
+                }
+            )
+            .set_index("label")
+        )
+        out = exprs_df.join(physical_properties)
+        out["embryo"] = embryo
+        out[
+            [
+                "embryo",
+                "area",
+                "diameter",
+                "Z",
+                "Y",
+                "X",
+                "sm50_spots",
+                "sm50_intensity",
+                "pks2_spots",
+                "pks2_intensity",
+            ]
+        ].to_csv(snakemake.output["csv"])

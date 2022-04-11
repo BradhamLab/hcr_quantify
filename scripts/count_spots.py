@@ -75,10 +75,10 @@ def select_signal(image, p_in_focus=0.75, margin_width=10):
     projected_2d = bf_stack.maximum_projection(selected)
     foreground = np.where(projected_2d > threshold_otsu(projected_2d))
     limits = BoundingBox(
-        min(foreground[0].min() - margin_width, 0),
-        max(foreground[0].max() + margin_width, image.shape[0]),
-        min(foreground[1].min() - margin_width, 0),
-        max(foreground[1].max() + margin_width, image.shape[1]),
+        ymin=max(foreground[0].min() - margin_width, 0),
+        ymax=min(foreground[0].max() + margin_width, image.shape[1]),
+        xmin=max(foreground[1].min() - margin_width, 0),
+        xmax=min(foreground[1].max() + margin_width, image.shape[2]),
     )
     return limits
 

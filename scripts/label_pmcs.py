@@ -1,4 +1,6 @@
+from tabnanny import check
 import h5py
+from matplotlib.pyplot import fill
 import numpy as np
 from scipy import signal, spatial
 from scipy import ndimage as ndi
@@ -99,14 +101,7 @@ def get_z_regions(region):
     list[skimage.measure.RegionProperties]
         Separte 2D regions comprising `region`
     """
-    try:
-        return [measure.regionprops(x.astype(int))[0] for x in region.image]
-    except IndexError:
-        print(region.label)
-        import zarr
-
-        zarr.save(f"tmp/{region.label}_failed.zarr", region.image)
-        raise IndentationError
+    return [measure.regionprops(x.astype(int))[0] for x in region.image]
 
 
 def split_labels_by_area(labels, region):
@@ -289,6 +284,63 @@ def renumber_labels(labels):
         assign_to_label(labels, region, None, i + 1)
 
 
+def fill_labels(labels, region):
+    """Fill labels using binary closing.
+
+    Parameters
+    ----------
+    labels : np.ndarray
+        Array of object labels
+    region : RegionProperties
+        Region in image containing label of interest
+    """
+    filled = morphology.binary_closing(region.image)
+    labels[region.slice][filled] = region.label
+
+
+def check_and_split_separated_labels(labels):
+    """Checks for and splits labels containing empty z-slices"""
+    for region in measure.regionprops(labels):
+        pixels_per_slice = region.image.sum(axis=1).sum(axis=1)
+        if 0 in pixels_per_slice:
+            logging.info(
+                "Z split label %s. Separating into distinct labels.", region.label
+            )
+            n_slices = len(pixels_per_slice)
+            n_labels = labels.max()
+            zeros = list(np.where(pixels_per_slice == 0)[0])
+            non_zeros = np.where(pixels_per_slice != 0)[0]
+            start_stops = []
+            start = non_zeros[0]
+            stop = n_slices
+            while start < n_slices:
+                if len(zeros) > 0:
+                    current_zero = zeros[0]
+                    stop = (
+                        non_zeros[non_zeros < current_zero][-1] + 1
+                    )  # add 1 bc of non-inclusive indexing
+                    start_stops.append((start, stop))
+                    non_zeros = np.array([x for x in non_zeros if x > stop])
+                    start = non_zeros[0]
+                    zeros.pop(0)
+                else:
+                    start_stops.append((start, n_slices))
+                    start = n_slices
+
+            for i, (start, stop) in enumerate(start_stops):
+                if i == 0:
+                    to_assign = region.label
+                else:
+                    to_assign = n_labels + 1
+                    n_labels += 1
+                slc = (slice(start, stop), slice(None), slice(None))
+                logging.info("Assigning %s between %d and %d", to_assign, start, stop)
+                assign_to_label(labels, region, slc, to_assign)
+                # labels[region.slice][start:stop, :, :][
+                #     region.image[start:stop, :, :]
+                # ] = to_assign
+
+
 def generate_labels(
     stain,
     pmc_probs,
@@ -298,7 +350,6 @@ def generate_labels(
     max_stacks=7,
     min_stacks=3,
     max_area=600,
-    split_disconnected=True,
 ):
     """Generate PMC labels within a confocal image.
 
@@ -353,41 +404,16 @@ def generate_labels(
             for x in pmc_probs > 0.5
         ),
     )
-    n_labels = labels.max()
-
     # close up any holes in labels
     for region in measure.regionprops(labels):
-        filled = morphology.binary_closing(region.image)
-        labels[region.slice][filled] = region.label
-        # assign_to_label(labels, region, (slice(None), slice(None), slice(None)), region.label)
+        fill_labels(labels, region)
 
+    # check for z-separated labels created by binary filling
+    check_and_split_separated_labels(labels)
+    # further segment large regions of PMCs using stricter criteria
     for region in measure.regionprops(labels):
         if region.area > max_area:
             strict_pmc_prediction(region, pmc_probs, labels, 0.8)
-    # check for abnormally large labels, possibly merged PMCS, so divide labels
-    # if they separate in the z-plane
-    for region in measure.regionprops(labels):
-        try:
-            region.feret_diameter_max
-        except QhullError:
-            continue
-        if region.feret_diameter_max > 20 and split_disconnected:
-            logging.info(
-                f"Region {region.label} exceeded diamter theshold, splitting on Z disconnects"
-            )
-            split, n_labels_new = split_z_disconeccted_labels(region, n_labels)
-            if n_labels != n_labels_new:
-                logging.info(
-                    f"Region {region.label} split into {n_labels_new - n_labels} regions."
-                )
-                assign_to_label(labels, region, None, 0)
-                for each in np.unique(split):
-                    if each != 0:
-                        labels[region.slice][split == each] = each
-            n_labels = n_labels_new
-
-    # a check to ensure we're keeping track properly
-    # assert n_labels == len(measure.regionprops(labels))
 
     # find abnormally long tracks, check for local minima in area size that
     # would indicate stacked pmcs. Additionally clean up small tails in labels.
@@ -395,12 +421,14 @@ def generate_labels(
         n_stacks = np.unique(region.coords[:, 0]).size
         if n_stacks > max_stacks:
             logging.info(
-                f"Region {region.label} exceed maximum z-length, splitting by area."
+                "Region %s exceed maximum z-length, splitting by area.", {region.label}
             )
             split_labels_by_area(labels, region)
         elif n_stacks < min_stacks:
             logging.info(
-                f"Region {region.label} only spans {region.image.shape[0]} z-slices: removing."
+                "Region %s only spans %d z-slices: removing.",
+                region.label,
+                region.image.shape[0],
             )
             assign_to_label(labels, region, None, 0)
         filter_by_area_length_ratio(labels, region, min_ratio=15)
@@ -410,54 +438,6 @@ def generate_labels(
     renumber_labels(labels)
 
     return labels
-
-
-def combine_segmentations(s1, s2):
-    """Combine PMC segmentations in a union-like way.
-
-    Combines PMC segmentations by prioritizing segmentations with *more* labels
-    per identified region. This is preferred in our case because splitting PMCs
-    is substantially more rare than merging PMCs.
-
-    Parameters
-    ----------
-    s1 : numpy.ndarray
-        3D image containing first segmentation of PMCs.
-    s2 : numpy.ndarray
-        3D image containing separate segmentation of PMCs.
-
-    Returns
-    -------
-    numpy.ndarray
-        Combined segmentation from `s1` and `s2`.
-    """
-    s1_regions = measure.regionprops(s1)
-    s2_regions = {r.label: r for r in measure.regionprops(s2)}
-    final = np.zeros_like(s1)
-    n_labels = 0
-    for region in s1_regions:
-        s1_in_s2 = s2[region.slice][region.image]
-        s2_labels = np.unique(s1_in_s2[s1_in_s2 != 0])
-        # If multiple labels from s2 exist in region defined by s1, take s2
-        # labels
-        if len(s2_labels) > 1:
-            for l in s2_labels:
-                n_labels += 1
-                if l in s2_regions:
-                    # assign if label space is onoccupied, remove assigned region
-                    if final[s2_regions[l].slice][s2_regions[l].image].sum() == 0:
-                        final[s2_regions[l].slice][s2_regions[l].image] = n_labels
-                    s2_regions.pop(l)
-        # if same number of regions, just use s1 region
-        else:
-            n_labels += 1
-            final[region.slice][region.image] = n_labels
-    # now add any regions from s2 that weren't covered by regions in s1
-    for l, region in s2_regions.items():
-        if final[region.slice][region.image].sum() == 0:
-            n_labels += 1
-            final[region.slice][region.image] = n_labels
-    return final
 
 
 def strict_pmc_prediction(region, pmc_probs, labels, threshold):
@@ -581,7 +561,6 @@ def find_pmcs(
         selem=selem,
         max_stacks=max_stacks,
         min_stacks=min_stacks,
-        split_disconnected=False,
     )
     # further segment large label blocks using strict segmentation values
     for region in measure.regionprops(labels):
@@ -644,6 +623,7 @@ if __name__ == "__main__":
         logging.getLogger().setLevel(logging.INFO)
         start_file = "MK886/MK_2_0/replicate3/18hpf_MK2uM_R3_emb9.nd2"
         wc = start_file.replace(".nd2", "").replace("_", "-").replace("/", "_")
+        wc = "MK886_MK-1-5_groupB_18-MK-1-5-emb1002"
         pmc_probs = np.array(
             h5py.File(os.path.join("data", "pmc_probs", f"{wc}.h5"), "r")[
                 "exported_data"
@@ -660,7 +640,6 @@ if __name__ == "__main__":
             selem=None,
             max_stacks=7,
             min_stacks=2,
-            split_disconnected=False,
         )
         labels2 = find_pmcs(pmc_stain, pmc_probs, strict_threshold=0.8)
         with napari.gui_qt():

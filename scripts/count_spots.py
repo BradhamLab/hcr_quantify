@@ -355,9 +355,9 @@ if __name__ == "__main__":
                 dot_radius_nm=gene_params[gene]["radius"],
                 whitehat=True,
                 smooth_method="gaussian",
-                smooth_sigma=5,
+                smooth_sigma=7,
                 verbose=False,
-                bits=12,  # img.metadata["attributes"].bitsPerComponentSignificant,
+                bits=raw_img.metadata["attributes"].bitsPerComponentSignificant,
             )
             fish_counts[f"{gene}_spots"] = quant["counts"]
             fish_counts[f"{gene}_intensity"] = quant["intensity"]

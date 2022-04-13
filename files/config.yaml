@@ -4,11 +4,12 @@ ilastik:
 input:
   logfile: /home/dakota/Data/icat_embryos/Nahomie/Nahomie_icat_embryo_log.csv
   datadir: /home/dakota/Data/icat_embryos/Nahomie
+  skip: ['MK886_MK-1-7_groupA_18-MK-1-7-emb1002']
 output:
   dir: data/
 quant:
   genes:
     sm50:
-      radius: [400, 350, 350]
+      radius: [750, 500, 500]
     pks2:
-      radius: [400, 350, 350]
+      radius: [750, 500, 500]

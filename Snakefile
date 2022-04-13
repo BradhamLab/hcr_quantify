@@ -5,9 +5,6 @@ import pandas as pd
 configfile: "files/config.yaml"
 
 
-# shell.prefix("conda activate napari; ")
-
-
 OUTDIR = config["output"]["dir"]
 
 
@@ -15,25 +12,32 @@ def file_to_wc(filename):
     return os.path.splitext(filename)[0].replace("_", "-").replace("/", "_")
 
 
+SKIP = config["input"]["skip"]
+
+
 def aggregate_checkpoint_output(wildcards, out_structure="counts/{embryo}.csv"):
     checkpoint_output = checkpoints.symlink_input_files.get(**wildcards).output[0]
-    print(checkpoint_output)
     file_names = expand(
         os.path.join(OUTDIR, out_structure),
-        embryo=glob_wildcards(os.path.join(checkpoint_output, "{embryo}.nd2")).embryo,
+        embryo=[
+            x
+            for x in glob_wildcards(
+                os.path.join(checkpoint_output, "{embryo}.nd2")
+            ).embryo
+            if x not in SKIP
+        ],
     )
     return file_names
 
 
-embryo_log = pd.read_csv(config["input"]["logfile"])
-embryo_log["wildcard"] = embryo_log.apply(lambda x: file_to_wc(x.file), axis=1)
-embryo_log.set_index("wildcard", inplace=True)
+EMBRYO_LOG = pd.read_csv(config["input"]["logfile"])
+EMBRYO_LOG["wildcard"] = EMBRYO_LOG.apply(lambda x: file_to_wc(x.file), axis=1)
+EMBRYO_LOG.set_index("wildcard", inplace=True)
 
 
 rule all:
     input:
-        # lambda x: aggregate_checkpoint_output(x, "labels/{embryo}_pmc_labels.h5"),
-        os.path.join(OUTDIR, 'final', 'counts.csv')
+        os.path.join(OUTDIR, "final", "counts.csv"),
 
 
 rule debug_conda:
@@ -56,7 +60,7 @@ checkpoint symlink_input_files:
 
 
 def get_embryo_param(wc, col):
-    return embryo_log.at[wc.embryo, col]
+    return EMBRYO_LOG.at[wc.embryo, col]
 
 
 rule normalize_pmc_stains:
@@ -84,7 +88,7 @@ rule predict_pmcs:
     output:
         os.path.join(OUTDIR, "pmc_probs", "{embryo}.h5"),
     log:
-        os.path.join(OUTDIR, "logs", "prediction", "{embryo}.log")
+        os.path.join(OUTDIR, "logs", "prediction", "{embryo}.log"),
     shell:
         "({params.ilastik_loc} --headless "
         "--project={input.model} "
@@ -100,7 +104,7 @@ rule label_pmcs:
     output:
         labels=os.path.join(OUTDIR, "labels", "{embryo}_pmc_labels.h5"),
     log:
-        log=os.path.join("logs", "labels", "{embryo}.log")
+        log=os.path.join("logs", "labels", "{embryo}.log"),
     conda:
         "envs/preprocess.yaml"
     script:
@@ -120,7 +124,7 @@ rule quantify_expression:
         image=os.path.join(OUTDIR, "expression", "{embryo}.nc"),
         csv=os.path.join(OUTDIR, "counts", "{embryo}.csv"),
     log:
-        "logs/quant/{embryo}.log"
+        "logs/quant/{embryo}.log",
     conda:
         "envs/quant.yaml"
     script:
@@ -129,8 +133,8 @@ rule quantify_expression:
 
 rule combine_counts:
     input:
-        lambda x: aggregate_checkpoint_output(x),
+        counts=lambda x: aggregate_checkpoint_output(x),
     output:
-        os.path.join(OUTDIR, "final", "counts.csv"),
+        csv=os.path.join(OUTDIR, "final", "counts.csv"),
     script:
         "scripts/combine_counts.py"

@@ -20,12 +20,8 @@ def convert_metadata(nd2_img):
     meta["SizeY"] = nd2_img.metadata["width"]
     meta["SizeZ"] = len(nd2_img.metadata["z_levels"])
     meta["SizeC"] = len(nd2_img.metadata["channels"])
-    meta["Channels"] = nd2_img.metadata["channels"]
+    meta["Channels"] = {x: {} for x in nd2_img.metadata["channels"]}
     return meta
-
-
-# https://github.com/tiangolo/typer
-main = typer.Typer()
 
 
 def main(nd2: str, prefix: str = "", emb_start: int = 0):
@@ -34,25 +30,25 @@ def main(nd2: str, prefix: str = "", emb_start: int = 0):
 
     Write each as an ome.tiff file.
 
-    Parameters
-    ----------
-    nd2 : str
-        ND2 image to separate.
-    prefix : str, optional
-        Prefix to append to written file names, by default ''.
-    emb_start : int, optional
+    Parameters\n
+    ----------\n
+    nd2 : str\n
+        ND2 image to separate.\n
+    prefix : str, optional\n
+        Prefix to append to written file names, by default ''.\n
+    emb_start : int, optional\n
         Embryo number to start count from, by default 0, and 'emb0' will be the
         first file written.
     """
     images = ND2Reader(nd2)
     embryos = []
-    dimension_order = "CZXY"
+    dimension_order = "CZYX"
     for i in range(images.sizes["v"]):
         images.default_coords["v"] = i
         channels = []
         for j in range(images.sizes["c"]):
             images.default_coords["c"] = j
-            images.bundle_axes = ("z", "x", "y")
+            images.bundle_axes = ("z", "y", "x")
             channels.append(images.get_frame(0))
         embryos.append(np.array(channels))
     embryos = np.array(embryos)
@@ -69,4 +65,5 @@ def main(nd2: str, prefix: str = "", emb_start: int = 0):
 
 
 if __name__ == "__main__":
+    # https://github.com/tiangolo/typer
     typer.run(main)
